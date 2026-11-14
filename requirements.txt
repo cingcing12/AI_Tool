@@ -1,0 +1,10 @@
+deep-translator
+gTTS
+edge-tts
+moviepy
+Pillow
+imageio-ffmpeg
+SpeechRecognition
+faster-whisper
+soundfile
+yt-dlp

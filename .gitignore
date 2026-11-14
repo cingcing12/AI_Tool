@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+.venv/
+venv/
+env/
+ENV/
+
+# Temporary generated test and runtime files
+tmp*
+tmp*/
+downloaded_videos/
+verified_*
+extended_check.mp4
+sample_input.mp4
+sample_speech_video.mp4
+sample_voice.mp3
+sample_narration.mp3
+sample_khmer.txt
+
+# Media and subtitle outputs
+*.mp4
+*.mp3
+*.wav
+*.srt
+transcript*.txt
+translated*.txt
+
+# IDE & Editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS artifacts
+Thumbs.db
+Desktop.ini
+.DS_Store
