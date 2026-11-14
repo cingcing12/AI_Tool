@@ -11,49 +11,64 @@ An automated tool to transcribe videos, translate subtitles into Khmer, synthesi
 - **Desktop GUI & CLI**: Interactive Tkinter graphical interface or terminal command-line interface.
 - **Video Downloader**: Supports downloading videos directly from links (including Douyin/TikTok).
 
-## Installation
+---
 
-1. Clone this repository:
+## Quick Start for Team Members (Windows)
+
+1. **Clone the repository**:
    ```bash
-   git clone <repository-url>
-   cd "New folder (3)"
+   git clone https://github.com/cingcing12/AI_Tool.git
+   cd AI_Tool
    ```
 
-2. Create and activate a virtual environment:
-   ```powershell
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   ```
+2. **Run with one click**:
+   - Double-click `run.bat`, or in PowerShell run:
+     ```powershell
+     .\run.ps1
+     ```
+   *The launcher script will automatically detect that `.venv` is missing, create it, install all dependencies from `requirements.txt`, and launch the desktop application!*
 
-3. Install dependencies:
+---
+
+## Manual Setup (Any OS)
+
+If you prefer to configure manually:
+
+1. **Create and activate a virtual environment**:
+   - **Windows (PowerShell)**:
+     ```powershell
+     python -m venv .venv
+     .\.venv\Scripts\Activate.ps1
+     ```
+   - **macOS / Linux**:
+     ```bash
+     python3 -m venv .venv
+     source .venv/bin/activate
+     ```
+
+2. **Install dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
 
-## Usage
+3. **Launch the application**:
+   - Desktop GUI:
+     ```bash
+     python main.py
+     ```
+   - Command Line:
+     ```bash
+     python main.py --video path/to/video.mp4 --speech-lang zh-CN --target-lang km
+     ```
+   - View all CLI arguments:
+     ```bash
+     python main.py --help
+     ```
 
-### Desktop GUI
-Run the GUI launcher:
-```powershell
-.\run.ps1
-```
-or:
-```powershell
-.\.venv\Scripts\python.exe main.py --gui
-```
-
-### Command Line
-```powershell
-.\run.ps1 --video path/to/video.mp4 --speech-lang zh-CN --target-lang km
-```
-
-See all available options:
-```powershell
-.\run.ps1 --help
-```
+---
 
 ## Running Tests
 
-```powershell
-.\.venv\Scripts\python.exe test_pipeline.py
+```bash
+python test_pipeline.py
 ```
