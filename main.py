@@ -47,6 +47,15 @@ class VideoTranslateApp(tk.Tk):
         # Build UI Layout
         self._create_layout()
 
+        # Clean shutdown protocol
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        """Ensure stream processes and audio player are closed gracefully."""
+        if hasattr(self, "player_view"):
+            self.player_view.destroy()
+        self.destroy()
+
     def _create_layout(self):
         """Construct the 2-column layout (Left: Unified YouTube Player, Right: 4 Controls) & Bottom Progress Bar."""
 
