@@ -484,24 +484,25 @@ class YouTubePlayerView(tk.Canvas):
             self._current_tw = tw
             self._current_th = th
 
-            screen_x1 = max(view_pad, (w - tw) // 2)
-            screen_x2 = screen_x1 + tw
+            # Full-width VLC-style Cinema Black Viewport (#000000)
+            screen_x1 = view_pad
+            screen_x2 = w - view_pad
             screen_y1 = view_pad
             screen_y2 = screen_y1 + th
 
             self._screen_bounds = (screen_x1, screen_y1, screen_x2, screen_y2)
 
-            mid_x = (screen_x1 + screen_x2) // 2
+            mid_x = w // 2
             mid_y = (screen_y1 + screen_y2) // 2
 
-            # Dark Video Container wraps video dimensions with ZERO gap above and below!
+            # Cinema Black Screen (#000000) - Just like VLC and YouTube!
             draw_rounded_rect(
                 self,
                 screen_x1, screen_y1,
                 screen_x2, screen_y2,
                 10,
-                fill="#0f172a",
-                outline="#1e293b",
+                fill="#000000",
+                outline="#0f172a",
                 width=1
             )
             if self.current_frame_image:
@@ -525,18 +526,18 @@ class YouTubePlayerView(tk.Canvas):
             self._controls_y = scrub_y + 16
 
         else:
-            # Idle placeholder when no video is loaded
+            # Idle placeholder when no video is loaded (Full width)
             tw = min(w - 2 * view_pad, 480)
             th = int(tw * 9.0 / 16.0)
             tw = tw - (tw % 2)
             th = th - (th % 2)
-            screen_x1 = max(view_pad, (w - tw) // 2)
-            screen_x2 = screen_x1 + tw
+            screen_x1 = view_pad
+            screen_x2 = w - view_pad
             screen_y1 = view_pad
             screen_y2 = screen_y1 + th
 
             self._screen_bounds = (screen_x1, screen_y1, screen_x2, screen_y2)
-            mid_x = (screen_x1 + screen_x2) // 2
+            mid_x = w // 2
             mid_y = (screen_y1 + screen_y2) // 2
 
             draw_rounded_rect(
