@@ -1,5 +1,23 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyd
+
+# Environments
 .venv/
 venv/
+ENV/
+
+# Temporary caches
+temp/*
+!temp/.gitkeep
+
+# Large FFmpeg Binaries (exceeds GitHub 100MB limit)
+bin/*.exe
+!bin/.gitkeep
+
+# Archives
+*.7z
+*.zip
+*.tar.gz
