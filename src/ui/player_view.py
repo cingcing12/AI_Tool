@@ -160,34 +160,29 @@ class YouTubePlayerView(tk.Canvas):
     def _get_target_dimensions(self):
         """
         Calculate preview dimensions fitting inside container while strictly
-        preserving original video aspect ratio (16:9, 9:16 portrait, 4:3, etc.).
+        preserving original video aspect ratio with zero wasted space above or below.
         """
+        ctl_h = 44
+        pad = 6
         try:
-            ctl_h = 44
-            view_pad = 6
-            max_w = max(64, self.winfo_width() - (view_pad * 2 + 4))
-            max_h = max(36, self.winfo_height() - ctl_h - (view_pad * 2 + 4))
+            avail_w = max(64, self.winfo_width() - 2 * pad)
+            avail_h = max(36, self.winfo_height() - ctl_h - 2 * pad)
         except Exception:
-            max_w, max_h = 480, 270
+            avail_w, avail_h = 480, 270
 
         vw = max(1, self.video_width)
         vh = max(1, self.video_height)
         video_aspect = float(vw) / float(vh)
-        container_aspect = float(max_w) / float(max_h)
 
-        if video_aspect > container_aspect:
-            # Video is wider than screen -> fit width, letterbox top/bottom
-            target_w = max_w
-            target_h = int(max_w / video_aspect)
-        else:
-            # Video is taller or equal -> fit height, pillarbox left/right
-            target_h = max_h
-            target_w = int(max_h * video_aspect)
+        tw = avail_w
+        th = int(tw / video_aspect)
+        if th > avail_h:
+            th = avail_h
+            tw = int(th * video_aspect)
 
-        # FFmpeg requires even dimensions
-        target_w = target_w - (target_w % 2)
-        target_h = target_h - (target_h % 2)
-        return max(64, target_w), max(36, target_h)
+        tw = tw - (tw % 2)
+        th = th - (th % 2)
+        return max(64, tw), max(36, th)
 
     def _extract_frame_worker(self, timestamp, target_w, target_h):
         """Background thread single-frame fast extraction."""
@@ -392,7 +387,7 @@ class YouTubePlayerView(tk.Canvas):
         w = self.winfo_width()
         scrub_pad = 12
         scrub_w = w - 2 * scrub_pad
-        scrub_y = self.winfo_height() - 44 + 8
+        scrub_y = getattr(self, "_scrub_y", self.winfo_height() - 44 + 8)
 
         if self.duration > 0 and scrub_w > 0:
             prog = max(0.0, min(1.0, self.current_time / self.duration))
@@ -411,12 +406,19 @@ class YouTubePlayerView(tk.Canvas):
         if not self.filepath:
             return
 
+        now = time.perf_counter()
+        # Real-time throttle: trigger resize every 30ms during active window drag
+        if now - getattr(self, "_last_resize_time", 0) > 0.03:
+            self._last_resize_time = now
+            self._handle_resize_dimensions()
+
+        # Trailing timer to guarantee final precision update when drag ends
         if self._resize_timer:
             try:
                 self.after_cancel(self._resize_timer)
             except Exception:
                 pass
-        self._resize_timer = self.after(50, self._handle_resize_dimensions)
+        self._resize_timer = self.after(25, self._handle_resize_dimensions)
 
     def _handle_resize_dimensions(self):
         self._resize_timer = None
@@ -478,23 +480,32 @@ class YouTubePlayerView(tk.Canvas):
         mid_y = (screen_bottom + view_pad) // 2
 
         if self.filepath:
+            tw, th = self._get_target_dimensions()
+            self._current_tw = tw
+            self._current_th = th
+
+            screen_x1 = max(view_pad, (w - tw) // 2)
+            screen_x2 = screen_x1 + tw
+            screen_y1 = view_pad
+            screen_y2 = screen_y1 + th
+
+            self._screen_bounds = (screen_x1, screen_y1, screen_x2, screen_y2)
+
+            mid_x = (screen_x1 + screen_x2) // 2
+            mid_y = (screen_y1 + screen_y2) // 2
+
+            # Dark Video Container wraps video dimensions with ZERO gap above and below!
             draw_rounded_rect(
                 self,
-                view_pad, view_pad,
-                w - view_pad, screen_bottom,
+                screen_x1, screen_y1,
+                screen_x2, screen_y2,
                 10,
                 fill="#0f172a",
                 outline="#1e293b",
                 width=1
             )
             if self.current_frame_image:
-                box_w = (w - view_pad) - view_pad
-                box_h = screen_bottom - view_pad
-                img_w = self.current_frame_image.width()
-                img_h = self.current_frame_image.height()
-                # Strict containment check: only draw image if it fits within the dark screen bounds
-                if img_w <= box_w + 4 and img_h <= box_h + 4:
-                    self.img_item_id = self.create_image(mid_x, mid_y, image=self.current_frame_image)
+                self.img_item_id = self.create_image(mid_x, mid_y, image=self.current_frame_image)
 
             # Center Play Overlay when paused
             if not self.is_playing:
@@ -505,12 +516,33 @@ class YouTubePlayerView(tk.Canvas):
                     mid_x - 7, mid_y + 11,
                     fill="#ffffff", outline=""
                 )
+
+            # Scrubber and controls placed directly below video with zero wasted space
+            scrub_pad = 12
+            scrub_y = screen_y2 + 8
+            scrub_w = w - 2 * scrub_pad
+            self._scrub_y = scrub_y
+            self._controls_y = scrub_y + 16
+
         else:
             # Idle placeholder when no video is loaded
+            tw = min(w - 2 * view_pad, 480)
+            th = int(tw * 9.0 / 16.0)
+            tw = tw - (tw % 2)
+            th = th - (th % 2)
+            screen_x1 = max(view_pad, (w - tw) // 2)
+            screen_x2 = screen_x1 + tw
+            screen_y1 = view_pad
+            screen_y2 = screen_y1 + th
+
+            self._screen_bounds = (screen_x1, screen_y1, screen_x2, screen_y2)
+            mid_x = (screen_x1 + screen_x2) // 2
+            mid_y = (screen_y1 + screen_y2) // 2
+
             draw_rounded_rect(
                 self,
-                view_pad, view_pad,
-                w - view_pad, screen_bottom,
+                screen_x1, screen_y1,
+                screen_x2, screen_y2,
                 10,
                 fill="#f8fafc",
                 outline="#e2e8f0",
@@ -531,11 +563,13 @@ class YouTubePlayerView(tk.Canvas):
                 outline=""
             )
 
-        # 3. YouTube Bottom Controls
-        scrub_pad = 12
-        scrub_y = screen_bottom + 8
-        scrub_w = w - 2 * scrub_pad
+            scrub_pad = 12
+            scrub_y = screen_y2 + 8
+            scrub_w = w - 2 * scrub_pad
+            self._scrub_y = scrub_y
+            self._controls_y = scrub_y + 16
 
+        # 3. YouTube Bottom Controls
         # Scrubber Background track
         self.create_rectangle(scrub_pad, scrub_y, w - scrub_pad, scrub_y + 3, fill="#e2e8f0", outline="")
 
@@ -548,7 +582,7 @@ class YouTubePlayerView(tk.Canvas):
         self.scrub_knob_id = self.create_oval(played_w - 5, scrub_y - 3, played_w + 5, scrub_y + 6, fill="#ff0000", outline="")
 
         # Controls Row
-        cy = scrub_y + 16
+        cy = self._controls_y
         icon_color = "#0f172a"
 
         # Play / Pause toggle icon
@@ -599,21 +633,24 @@ class YouTubePlayerView(tk.Canvas):
     def _on_mouse_down(self, event):
         w = self.winfo_width()
         h = self.winfo_height()
-        ctl_h = 44
-        screen_bottom = h - ctl_h
-        scrub_pad = 12
-        scrub_y = screen_bottom + 8
-        scrub_w = w - 2 * scrub_pad
 
         if not self.filepath:
             return
 
+        screen_bounds = getattr(self, "_screen_bounds", None)
+        scrub_y = getattr(self, "_scrub_y", h - 36)
+        controls_y = getattr(self, "_controls_y", h - 20)
+
         # 1. Clicking on Video Screen toggles Play / Pause
-        if event.y < screen_bottom:
-            self.toggle_play_pause()
-            return
+        if screen_bounds:
+            sx1, sy1, sx2, sy2 = screen_bounds
+            if sx1 <= event.x <= sx2 and sy1 <= event.y <= sy2:
+                self.toggle_play_pause()
+                return
 
         # 2. Clicking on Scrubber
+        scrub_pad = 12
+        scrub_w = w - 2 * scrub_pad
         if (scrub_y - 6) <= event.y <= (scrub_y + 8) and scrub_w > 0:
             if self.duration > 0:
                 self._was_playing_before_scrub = self.is_playing
@@ -628,28 +665,27 @@ class YouTubePlayerView(tk.Canvas):
                 self._update_progress_only()
             return
 
-        # 3. Play / Pause Button Click
-        if 10 <= event.x <= 40:
-            self.toggle_play_pause()
-            return
+        # 3. Controls Click (Play/Pause, Speaker, Volume)
+        if (controls_y - 14) <= event.y <= (controls_y + 14):
+            if 10 <= event.x <= 40:
+                self.toggle_play_pause()
+                return
 
-        # 4. Speaker / Mute Button Click
-        if 46 <= event.x <= 70:
-            self.is_muted = not self.is_muted
-            vol = 0.0 if self.is_muted else self.volume
-            self.audio_player.set_volume(vol)
-            self._redraw_full()
-            return
+            if 46 <= event.x <= 70:
+                self.is_muted = not self.is_muted
+                vol = 0.0 if self.is_muted else self.volume
+                self.audio_player.set_volume(vol)
+                self._redraw_full()
+                return
 
-        # 5. Volume Slider Bar Click
-        if 74 <= event.x <= 128:
-            self.is_adjusting_vol = True
-            v = max(0.0, min(1.0, (event.x - 76) / 48.0))
-            self.volume = v
-            self.is_muted = (v == 0)
-            self.audio_player.set_volume(0.0 if self.is_muted else self.volume)
-            self._redraw_full()
-            return
+            if 74 <= event.x <= 128:
+                self.is_adjusting_vol = True
+                v = max(0.0, min(1.0, (event.x - 76) / 48.0))
+                self.volume = v
+                self.is_muted = (v == 0)
+                self.audio_player.set_volume(0.0 if self.is_muted else self.volume)
+                self._redraw_full()
+                return
 
     def _on_mouse_drag(self, event):
         w = self.winfo_width()
