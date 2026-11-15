@@ -52,11 +52,16 @@ class YouTubePlayerView(tk.Canvas):
         self.current_frame_image = None
         self._stream_proc = None
         self._stream_thread = None
+        self._stream_gen = 0
         self._stop_stream_event = threading.Event()
 
         # Thread-safe Frame Queue
         self.frame_queue = queue.Queue(maxsize=8)
         self._poll_job = None
+
+        # Resize Debounce & Dimensions Cache
+        self._resize_timer = None
+        self._last_rendered_dims = None
 
         # Canvas Item IDs for fast updates
         self.img_item_id = None
@@ -197,9 +202,11 @@ class YouTubePlayerView(tk.Canvas):
         try:
             if self.current_frame_image is None:
                 self.current_frame_image = tk.PhotoImage(data=ppm_data)
+                self._last_rendered_dims = (self.current_frame_image.width(), self.current_frame_image.height())
                 self._redraw_full()
             else:
                 self.current_frame_image.configure(data=ppm_data)
+                self._last_rendered_dims = (self.current_frame_image.width(), self.current_frame_image.height())
                 if self.img_item_id is not None:
                     self.itemconfigure(self.img_item_id, image=self.current_frame_image)
                 else:
@@ -273,10 +280,12 @@ class YouTubePlayerView(tk.Canvas):
         self.audio_player.play(start_seconds=self.current_time)
 
         # Start video stream thread with preserved aspect ratio
+        self._stream_gen += 1
+        gen = self._stream_gen
         target_w, target_h = self._get_target_dimensions()
         self._stream_thread = threading.Thread(
             target=self._stream_worker,
-            args=(self.current_time, target_w, target_h),
+            args=(self.current_time, target_w, target_h, 25, gen),
             daemon=True
         )
         self._stream_thread.start()
@@ -307,11 +316,12 @@ class YouTubePlayerView(tk.Canvas):
 
         self._redraw_full()
 
-    def _stream_worker(self, start_time, target_w, target_h, fps=25):
+    def _stream_worker(self, start_time, target_w, target_h, fps=25, gen=0):
         """Background thread streaming continuous frames from FFmpeg pipe at 25 FPS."""
         stream_res = self.engine.start_video_stream(self.filepath, start_time, target_w, target_h, fps)
         if not stream_res:
-            self.frame_queue.put(("finished", None, None))
+            if gen == self._stream_gen:
+                self.frame_queue.put(("finished", None, None))
             return
 
         proc, w, h = stream_res
@@ -326,6 +336,9 @@ class YouTubePlayerView(tk.Canvas):
 
         try:
             while not self._stop_stream_event.is_set():
+                if gen != self._stream_gen:
+                    break
+
                 raw_frame = proc.stdout.read(frame_size)
                 if len(raw_frame) < frame_size:
                     # Video stream reached end
@@ -360,7 +373,7 @@ class YouTubePlayerView(tk.Canvas):
             except Exception:
                 pass
 
-        if not self._stop_stream_event.is_set():
+        if gen == self._stream_gen and not self._stop_stream_event.is_set():
             self.frame_queue.put(("finished", None, None))
 
     def _on_playback_finished(self):
@@ -395,6 +408,49 @@ class YouTubePlayerView(tk.Canvas):
 
     def _on_configure(self, event=None):
         self._redraw_full()
+        if not self.filepath:
+            return
+
+        if self._resize_timer:
+            try:
+                self.after_cancel(self._resize_timer)
+            except Exception:
+                pass
+        self._resize_timer = self.after(50, self._handle_resize_dimensions)
+
+    def _handle_resize_dimensions(self):
+        self._resize_timer = None
+        if not self.filepath:
+            return
+
+        tw, th = self._get_target_dimensions()
+        if (tw, th) == self._last_rendered_dims:
+            return
+
+        if self.is_playing:
+            # Reconnect streaming process at new dimensions
+            self._stream_gen += 1
+            gen = self._stream_gen
+            if self._stream_proc:
+                try:
+                    self._stream_proc.kill()
+                except Exception:
+                    pass
+                self._stream_proc = None
+
+            self._stream_thread = threading.Thread(
+                target=self._stream_worker,
+                args=(self.current_time, tw, th, 25, gen),
+                daemon=True
+            )
+            self._stream_thread.start()
+        else:
+            # Re-extract single frame at new dimensions
+            threading.Thread(
+                target=self._extract_frame_worker,
+                args=(self.current_time, tw, th),
+                daemon=True
+            ).start()
 
     def _redraw_full(self, event=None):
         """Complete redraw of the unified video canvas and YouTube controls."""
@@ -432,7 +488,13 @@ class YouTubePlayerView(tk.Canvas):
                 width=1
             )
             if self.current_frame_image:
-                self.img_item_id = self.create_image(mid_x, mid_y, image=self.current_frame_image)
+                box_w = (w - view_pad) - view_pad
+                box_h = screen_bottom - view_pad
+                img_w = self.current_frame_image.width()
+                img_h = self.current_frame_image.height()
+                # Strict containment check: only draw image if it fits within the dark screen bounds
+                if img_w <= box_w + 4 and img_h <= box_h + 4:
+                    self.img_item_id = self.create_image(mid_x, mid_y, image=self.current_frame_image)
 
             # Center Play Overlay when paused
             if not self.is_playing:
@@ -617,6 +679,13 @@ class YouTubePlayerView(tk.Canvas):
 
     def destroy(self):
         """Cleanup poll loop, process and audio device on destroy."""
+        if self._resize_timer:
+            try:
+                self.after_cancel(self._resize_timer)
+            except Exception:
+                pass
+            self._resize_timer = None
+
         if self._poll_job:
             try:
                 self.after_cancel(self._poll_job)
