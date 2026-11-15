@@ -3,6 +3,7 @@ Core Video Engine: Handles FFmpeg streaming, frame extraction, audio extraction,
 """
 
 import os
+import json
 import subprocess
 
 
@@ -41,30 +42,65 @@ class VideoEngine:
         sec = s % 60
         return f"{h:02d}:{m:02d}:{sec:02d}"
 
-    def probe_duration(self, filepath):
-        """Extract exact duration in seconds using ffprobe."""
+    def probe_video_metadata(self, filepath):
+        """
+        Probe duration, width, height, and audio stream existence in one fast ffprobe call.
+        Returns dict: {'duration': float, 'width': int, 'height': int, 'has_audio': bool}
+        """
+        result = {
+            "duration": 0.0,
+            "width": 640,
+            "height": 360,
+            "has_audio": False
+        }
         if not os.path.exists(filepath):
-            return 0.0
+            return result
 
         if os.path.exists(self.ffprobe_path):
             try:
                 cmd = [
                     self.ffprobe_path,
                     "-v", "error",
-                    "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    "-show_entries", "stream=codec_type,width,height,duration:format=duration",
+                    "-of", "json",
                     filepath
                 ]
                 res = subprocess.run(cmd, capture_output=True, text=True, creationflags=0x08000000)
-                dur = float(res.stdout.strip())
-                if dur > 0:
-                    return dur
+                if res.stdout:
+                    data = json.loads(res.stdout)
+                    # Duration from format
+                    if "format" in data and "duration" in data["format"]:
+                        try:
+                            result["duration"] = float(data["format"]["duration"])
+                        except Exception:
+                            pass
+
+                    # Streams
+                    for s in data.get("streams", []):
+                        if s.get("codec_type") == "video":
+                            if "width" in s and "height" in s:
+                                result["width"] = int(s["width"])
+                                result["height"] = int(s["height"])
+                            if result["duration"] <= 0 and "duration" in s:
+                                try:
+                                    result["duration"] = float(s["duration"])
+                                except Exception:
+                                    pass
+                        elif s.get("codec_type") == "audio":
+                            result["has_audio"] = True
             except Exception:
                 pass
 
-        # Fallback estimation based on file size
-        size_mb = os.path.getsize(filepath) / (1024 * 1024)
-        return max(60.0, min(600.0, size_mb * 15.0))
+        if result["duration"] <= 0:
+            size_mb = os.path.getsize(filepath) / (1024 * 1024)
+            result["duration"] = max(60.0, min(600.0, size_mb * 15.0))
+
+        return result
+
+    def probe_duration(self, filepath):
+        """Extract exact duration in seconds using ffprobe."""
+        meta = self.probe_video_metadata(filepath)
+        return meta["duration"]
 
     def extract_frame_ppm(self, filepath, timestamp, target_w, target_h):
         """
@@ -142,7 +178,7 @@ class VideoEngine:
             return None
 
     def extract_audio(self, filepath, output_wav=None):
-        """Extract audio track as standard 16kHz mono WAV for dubbing and preview playback."""
+        """Extract audio track as standard 16kHz mono WAV for dubbing."""
         if not os.path.exists(filepath) or not os.path.exists(self.ffmpeg_path):
             return None
 
@@ -155,8 +191,8 @@ class VideoEngine:
                 "-i", filepath,
                 "-vn",
                 "-acodec", "pcm_s16le",
-                "-ar", "44100",
-                "-ac", "2",
+                "-ar", "16000",
+                "-ac", "1",
                 "-y", output_wav
             ]
             subprocess.run(cmd, capture_output=True, creationflags=0x08000000)

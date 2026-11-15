@@ -1,6 +1,6 @@
 """
 Unified YouTube Player View Widget: Real Video Frame preview + YouTube controls.
-High-Performance 25 FPS Smooth Streaming with Zero Lag and Native Windows Audio!
+High-Performance 25 FPS Smooth Streaming with Aspect Ratio Preservation and Real Windows Audio!
 """
 
 import os
@@ -18,9 +18,9 @@ class YouTubePlayerView(tk.Canvas):
     One Single Unified Video Player:
     - Entire screen has smooth rounded corners (radius=14)
     - Upper area: High-performance 25 FPS video preview streamed directly from FFmpeg into memory
+    - Aspect Ratio Preservation: 100% faithful to original video aspect ratio (16:9, 9:16 portrait, 4:3, etc.)
+    - Real synchronized Windows audio via Winsound & WaveOutSetVolume (Speakers, Headphones, Bluetooth)
     - Bottom area: Seamless YouTube controls (Red scrubber, Play/Stop toggle, Speaker, Volume, Time)
-    - Native synchronized Windows audio via WinMM MCI (0% latency, volume control, instant seek)
-    - Thread-safe Queue-based frame ingestion for Python 3.15+ (Zero lag, zero GUI freezes)
     - Clean white aesthetic, zero muddy gray!
     """
 
@@ -33,16 +33,18 @@ class YouTubePlayerView(tk.Canvas):
 
         # Video & Audio Engines
         self.engine = VideoEngine()
-        self.audio_player = WindowsAudioPlayer()
-        self.audio_wav_path = None
+        self.audio_player = WindowsAudioPlayer(ffmpeg_path=self.engine.ffmpeg_path, temp_dir=self.engine.temp_dir)
 
-        # Video State
+        # Video State & Metadata
         self.filepath = ""
         self.filename = ""
         self.is_playing = False
         self.is_muted = False
         self.current_time = 0.0
         self.duration = 0.0
+        self.video_width = 640
+        self.video_height = 360
+        self.has_audio = False
         self.volume = 0.8
         self.previous_volume = 0.8
 
@@ -123,7 +125,7 @@ class YouTubePlayerView(tk.Canvas):
         return f"{m}:{sec:02d}"
 
     def load_video(self, filepath):
-        """Load a video file, probe duration, extract audio, and render first frame."""
+        """Load a video file, probe metadata, preserve aspect ratio, and render first frame."""
         self.stop_playback()
 
         self.filepath = filepath
@@ -132,36 +134,50 @@ class YouTubePlayerView(tk.Canvas):
         self.is_playing = False
         self.current_frame_image = None
 
-        # 1. Probe duration
-        self.duration = self.engine.probe_duration(filepath)
+        # 1. Fast probe metadata (Duration, Width, Height, Audio)
+        meta = self.engine.probe_video_metadata(filepath)
+        self.duration = meta["duration"]
+        self.video_width = meta["width"]
+        self.video_height = meta["height"]
+        self.has_audio = meta["has_audio"]
 
-        # 2. Extract audio in background for preview playback
-        self.audio_wav_path = os.path.join(self.engine.temp_dir, f"audio_{int(time.time())}.wav")
-        threading.Thread(target=self._prepare_audio, daemon=True).start()
+        # 2. Setup audio player
+        self.audio_player.load(filepath, has_audio=self.has_audio)
+        self.audio_player.set_volume(0.0 if self.is_muted else self.volume)
 
-        # 3. Extract first frame in memory and render
+        # 3. Extract first frame in memory and render keeping exact aspect ratio
         tw, th = self._get_target_dimensions()
         threading.Thread(target=self._extract_frame_worker, args=(0.1, tw, th), daemon=True).start()
         self._redraw_full()
 
-    def _prepare_audio(self):
-        """Extract audio to WAV and load into native Windows audio player."""
-        if not self.filepath:
-            return
-        wav = self.engine.extract_audio(self.filepath, self.audio_wav_path)
-        if wav and os.path.exists(wav):
-            self.audio_player.load(wav)
-            vol = 0.0 if self.is_muted else self.volume
-            self.audio_player.set_volume(vol)
-
     def _get_target_dimensions(self):
+        """
+        Calculate preview dimensions fitting inside container while strictly
+        preserving original video aspect ratio (16:9, 9:16 portrait, 4:3, etc.).
+        """
         try:
-            w = max(280, self.winfo_width() - 16)
-            h = max(160, self.winfo_height() - 56)
+            ctl_h = 44
+            view_pad = 6
+            max_w = max(64, self.winfo_width() - (view_pad * 2 + 4))
+            max_h = max(36, self.winfo_height() - ctl_h - (view_pad * 2 + 4))
         except Exception:
-            w, h = 480, 270
-        target_w = min(w, int(h * 16.0 / 9.0))
-        target_h = int(target_w * 9.0 / 16.0)
+            max_w, max_h = 480, 270
+
+        vw = max(1, self.video_width)
+        vh = max(1, self.video_height)
+        video_aspect = float(vw) / float(vh)
+        container_aspect = float(max_w) / float(max_h)
+
+        if video_aspect > container_aspect:
+            # Video is wider than screen -> fit width, letterbox top/bottom
+            target_w = max_w
+            target_h = int(max_w / video_aspect)
+        else:
+            # Video is taller or equal -> fit height, pillarbox left/right
+            target_h = max_h
+            target_w = int(max_h * video_aspect)
+
+        # FFmpeg requires even dimensions
         target_w = target_w - (target_w % 2)
         target_h = target_h - (target_h % 2)
         return max(64, target_w), max(36, target_h)
@@ -225,12 +241,11 @@ class YouTubePlayerView(tk.Canvas):
         if self.on_status_change:
             self.on_status_change("Playing video smoothly... ▶ (Click Stop to stop & reset)")
 
-        # Play audio
-        vol = 0.0 if self.is_muted else self.volume
-        self.audio_player.set_volume(vol)
-        self.audio_player.play(start_ms=self.current_time * 1000)
+        # Play audio through default Windows sound output
+        self.audio_player.set_volume(0.0 if self.is_muted else self.volume)
+        self.audio_player.play(start_seconds=self.current_time)
 
-        # Start video stream thread
+        # Start video stream thread with preserved aspect ratio
         target_w, target_h = self._get_target_dimensions()
         self._stream_thread = threading.Thread(
             target=self._stream_worker,
@@ -375,7 +390,7 @@ class YouTubePlayerView(tk.Canvas):
         # 1. Outer Container (Clean White with Rounded Corners)
         draw_rounded_rect(self, 1, 1, w - 1, h - 1, r, fill="#ffffff", outline="#e2e8f0", width=1)
 
-        # 2. Upper Video Preview Screen
+        # 2. Upper Video Preview Screen (Clean Dark Background with Natural Letterbox / Pillarbox)
         mid_x = w // 2
         mid_y = (screen_bottom + view_pad) // 2
 
