@@ -54,7 +54,10 @@ from pipeline import (
     transcribe_audio_window,
 )
 from ui import (
+    AnimatedBorderCard,
     COOKIE_BROWSER_OPTIONS,
+    KhmerVideoUI,
+    PulsingStatusDot,
     SPEECH_LANGUAGE_OPTIONS,
     TRANSLATION_SOURCE_OPTIONS,
     TRANSLATION_TARGET_OPTIONS,
@@ -871,6 +874,61 @@ class PipelineTests(unittest.TestCase):
 
         self.assertEqual(result, current_segments)
         retry_mock.assert_not_called()
+
+
+class UITests(unittest.TestCase):
+    def test_ui_instantiation_and_animation_states(self) -> None:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = KhmerVideoUI(root)
+            self.assertGreaterEqual(len(app.animated_cards), 1)
+            self.assertTrue(hasattr(app, "status_dot"))
+
+            app._set_busy(True, "Processing AI Task")
+            self.assertTrue(app.busy)
+            self.assertEqual(app.status_dot.state, "busy")
+            for card in app.animated_cards:
+                self.assertTrue(card.is_busy)
+
+            app._set_busy(False, "Ready")
+            self.assertFalse(app.busy)
+            self.assertEqual(app.status_dot.state, "ready")
+            for card in app.animated_cards:
+                self.assertFalse(card.is_busy)
+
+            # Test perimeter math
+            card = app.animated_cards[0]
+            pt = card._get_perimeter_point(50, 200, 100)
+            self.assertEqual(pt, (50, 0.0))
+            path = card._get_path_between(180, 220, 200, 100, 1, 1)
+            self.assertGreaterEqual(len(path), 2)
+
+            # Test new UI functions
+            self.assertEqual(app.play_button.cget("text"), "▶ Start Video")
+
+            app._toggle_advanced_options()
+            self.assertIn(app.adv_frame, app.adv_frame.master.pack_slaves())
+            app._toggle_advanced_options()
+            self.assertNotIn(app.adv_frame, app.adv_frame.master.pack_slaves())
+
+            app._on_volume_change("0.40")
+            self.assertEqual(app.original_volume_var.get(), "0.40")
+            self.assertEqual(app.vol_label.cget("text"), "40%")
+
+            app._set_progress(50.0, "Step 2/3: Translating script...")
+            self.assertEqual(app.progress_percent_var.get(), 50.0)
+            self.assertEqual(app.progress_text_var.get(), "Step 2/3: Translating script...")
+            self.assertEqual(app.percent_label.cget("text"), "50%")
+
+            app._on_close()
+        finally:
+            try:
+                root.destroy()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
