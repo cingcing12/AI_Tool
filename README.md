@@ -157,14 +157,4 @@ To keep the repository clean and avoid conflicts:
 - **Hidden Subprocess Windows:** Subprocess invocations use Windows `creationflags=0x08000000` (`CREATE_NO_WINDOW`) to prevent annoying command prompt popups.
 - **Clean Disposal Protocol:** Closing the main window automatically triggers `player_view.destroy()`, terminating active stream subprocesses and releasing audio devices immediately.
 
----
 
-## 👤 Credits & Author
-
-- **Project Lead:** បង **LIHOUR**
-- **Architecture & Development:** ប្អូន **ហនុមាន (Hanuman)**
-- **Organization:** DUC / SPD Team
-
----
-
-*Happy Dubbing & Translating! 🚀🎥*
