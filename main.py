@@ -41,7 +41,7 @@ class VideoTranslateApp(tk.Tk):
         self.output_folder = default_downloads if os.path.exists(default_downloads) else os.path.expanduser("~")
 
         self.voice_type = "Man"
-        self.status_var = tk.StringVar(value="Status: Ready. Click 'Load' to select video.")
+        self.status_var = tk.StringVar(value="Ready")
         self.is_processing = False
 
         # Build UI Layout
@@ -231,7 +231,7 @@ class VideoTranslateApp(tk.Tk):
 
         # Load video and extract real frames via VideoEngine
         self.player_view.load_video(selected_file)
-        self.status_var.set(f"Loaded '{filename}' successfully. Ready to dub!")
+        self.status_var.set("Ready")
 
     def browse_output_folder(self):
         """Action 2 (Browse): Select destination folder where the dubbed video will be stored."""
@@ -241,8 +241,7 @@ class VideoTranslateApp(tk.Tk):
         )
         if selected_dir:
             self.output_folder = selected_dir
-            folder_name = os.path.basename(selected_dir) or selected_dir
-            self.status_var.set(f"Save destination set to '{folder_name}'.")
+            self.status_var.set("Ready")
 
     def toggle_voice(self):
         """Action 3 (Voice): Toggle between Man and Woman on each click."""
@@ -295,10 +294,10 @@ class VideoTranslateApp(tk.Tk):
     def _dubbing_worker(self, filepath, voice, output_path):
         """Worker thread executing audio extraction and dubbing pipeline."""
         steps = [
-            (20, "1/4 Extracting audio track with FFmpeg... 🎵"),
-            (50, f"2/4 Generating {voice} AI speech clone... 🎙️"),
-            (80, "3/4 Merging dubbed audio track with video... 🎬"),
-            (100, f"4/4 Completed and saved to {os.path.basename(output_path)}! 🎉")
+            (20, "Extracting audio..."),
+            (50, f"Generating {voice} voice..."),
+            (80, "Merging video..."),
+            (100, "Complete!")
         ]
 
         # Extract audio using real VideoEngine

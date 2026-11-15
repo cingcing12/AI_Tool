@@ -148,6 +148,8 @@ class YouTubePlayerView(tk.Canvas):
         # 3. Extract first frame in memory and render keeping exact aspect ratio
         tw, th = self._get_target_dimensions()
         threading.Thread(target=self._extract_frame_worker, args=(0.1, tw, th), daemon=True).start()
+        if self.on_status_change:
+            self.on_status_change("Ready")
         self._redraw_full()
 
     def _get_target_dimensions(self):
@@ -240,7 +242,7 @@ class YouTubePlayerView(tk.Canvas):
         self.audio_player.stop()
 
         if self.on_status_change:
-            self.on_status_change(f"Video paused at {self._format_time(self.current_time)}. Click ▶ to resume.")
+            self.on_status_change("Paused")
 
         self._redraw_full()
 
@@ -264,7 +266,7 @@ class YouTubePlayerView(tk.Canvas):
             self.current_time = 0.0
 
         if self.on_status_change:
-            self.on_status_change(f"Playing video ({self._format_time(self.current_time)})... || (Click to Pause)")
+            self.on_status_change("Playing")
 
         # Play audio through default Windows sound output from current timestamp
         self.audio_player.set_volume(0.0 if self.is_muted else self.volume)
@@ -299,7 +301,7 @@ class YouTubePlayerView(tk.Canvas):
         if reset_to_start:
             self.current_time = 0.0
             if self.on_status_change:
-                self.on_status_change("Video stopped and reset to 0:00. ■")
+                self.on_status_change("Ready")
             tw, th = self._get_target_dimensions()
             threading.Thread(target=self._extract_frame_worker, args=(0.1, tw, th), daemon=True).start()
 
@@ -367,7 +369,7 @@ class YouTubePlayerView(tk.Canvas):
         self.current_time = 0.0
         self.audio_player.stop()
         if self.on_status_change:
-            self.on_status_change("Playback finished. Click ▶ to replay.")
+            self.on_status_change("Ready")
         self._redraw_full()
         tw, th = self._get_target_dimensions()
         threading.Thread(target=self._extract_frame_worker, args=(0.1, tw, th), daemon=True).start()
@@ -562,8 +564,6 @@ class YouTubePlayerView(tk.Canvas):
                 tw, th = self._get_target_dimensions()
                 threading.Thread(target=self._extract_frame_worker, args=(self.current_time, tw, th), daemon=True).start()
                 self._update_progress_only()
-                if self.on_status_change:
-                    self.on_status_change(f"Seeked to {self._format_time(self.current_time)}")
             return
 
         # 3. Play / Pause Button Click
@@ -577,8 +577,6 @@ class YouTubePlayerView(tk.Canvas):
             vol = 0.0 if self.is_muted else self.volume
             self.audio_player.set_volume(vol)
             self._redraw_full()
-            if self.on_status_change:
-                self.on_status_change("Sound muted." if self.is_muted else f"Sound unmuted ({int(self.volume*100)}%).")
             return
 
         # 5. Volume Slider Bar Click
@@ -589,8 +587,6 @@ class YouTubePlayerView(tk.Canvas):
             self.is_muted = (v == 0)
             self.audio_player.set_volume(0.0 if self.is_muted else self.volume)
             self._redraw_full()
-            if self.on_status_change:
-                self.on_status_change(f"Volume: {int(self.volume * 100)}%")
             return
 
     def _on_mouse_drag(self, event):
