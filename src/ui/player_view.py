@@ -205,22 +205,47 @@ class YouTubePlayerView(tk.Canvas):
         except Exception:
             pass
 
-    def toggle_play_stop(self):
-        """Toggle between smooth playback and stop/reset."""
+    def toggle_play_pause(self):
+        """Toggle between Play ▶ and Pause || (preserves current timestamp, does NOT reset to 0:00)."""
         if not self.filepath:
             return False
 
         if not self.is_playing:
             self.start_playback()
         else:
-            self.stop_playback(reset_to_start=True)
+            self.pause_playback()
         return self.is_playing
 
+    def toggle_play_stop(self):
+        """Backward compatibility alias for toggle_play_pause."""
+        return self.toggle_play_pause()
+
     def toggle_play(self):
-        return self.toggle_play_stop()
+        return self.toggle_play_pause()
+
+    def pause_playback(self):
+        """Pause playback at current frame without resetting position."""
+        self.is_playing = False
+        self._stop_stream_event.set()
+
+        # Terminate FFmpeg stream process
+        if self._stream_proc:
+            try:
+                self._stream_proc.kill()
+            except Exception:
+                pass
+            self._stream_proc = None
+
+        # Pause audio
+        self.audio_player.stop()
+
+        if self.on_status_change:
+            self.on_status_change(f"Video paused at {self._format_time(self.current_time)}. Click ▶ to resume.")
+
+        self._redraw_full()
 
     def start_playback(self):
-        """Start smooth 25 FPS video stream and synchronized audio."""
+        """Start or resume smooth 25 FPS video stream and synchronized audio."""
         if not self.filepath or self.is_playing:
             return
 
@@ -239,9 +264,9 @@ class YouTubePlayerView(tk.Canvas):
             self.current_time = 0.0
 
         if self.on_status_change:
-            self.on_status_change("Playing video smoothly... ▶ (Click Stop to stop & reset)")
+            self.on_status_change(f"Playing video ({self._format_time(self.current_time)})... || (Click to Pause)")
 
-        # Play audio through default Windows sound output
+        # Play audio through default Windows sound output from current timestamp
         self.audio_player.set_volume(0.0 if self.is_muted else self.volume)
         self.audio_player.play(start_seconds=self.current_time)
 
@@ -342,7 +367,7 @@ class YouTubePlayerView(tk.Canvas):
         self.current_time = 0.0
         self.audio_player.stop()
         if self.on_status_change:
-            self.on_status_change("Playback finished and reset to 0:00.")
+            self.on_status_change("Playback finished. Click ▶ to replay.")
         self._redraw_full()
         tw, th = self._get_target_dimensions()
         threading.Thread(target=self._extract_frame_worker, args=(0.1, tw, th), daemon=True).start()
@@ -462,12 +487,15 @@ class YouTubePlayerView(tk.Canvas):
         cy = scrub_y + 16
         icon_color = "#0f172a"
 
-        # Play / Stop toggle icon
+        # Play / Pause toggle icon
         px = 24
         if not self.is_playing:
+            # Play icon ▶ (Triangle)
             self.create_polygon(px - 5, cy - 7, px + 7, cy, px - 5, cy + 7, fill=icon_color, outline="")
         else:
-            self.create_rectangle(px - 5, cy - 5, px + 5, cy + 5, fill="#ef4444", outline="")
+            # Pause icon || (Two sleek vertical bars)
+            self.create_rectangle(px - 5, cy - 6, px - 2, cy + 6, fill=icon_color, outline="")
+            self.create_rectangle(px + 2, cy - 6, px + 5, cy + 6, fill=icon_color, outline="")
 
         # Speaker icon
         sx = 56
@@ -516,9 +544,9 @@ class YouTubePlayerView(tk.Canvas):
         if not self.filepath:
             return
 
-        # 1. Clicking on Video Screen toggles Play / Stop
+        # 1. Clicking on Video Screen toggles Play / Pause
         if event.y < screen_bottom:
-            self.toggle_play_stop()
+            self.toggle_play_pause()
             return
 
         # 2. Clicking on Scrubber
@@ -526,7 +554,7 @@ class YouTubePlayerView(tk.Canvas):
             if self.duration > 0:
                 self._was_playing_before_scrub = self.is_playing
                 if self.is_playing:
-                    self.stop_playback(reset_to_start=False)
+                    self.pause_playback()
 
                 self.is_scrubbing = True
                 prog = max(0.0, min(1.0, (event.x - scrub_pad) / float(scrub_w)))
@@ -538,9 +566,9 @@ class YouTubePlayerView(tk.Canvas):
                     self.on_status_change(f"Seeked to {self._format_time(self.current_time)}")
             return
 
-        # 3. Play / Stop Button Click
+        # 3. Play / Pause Button Click
         if 10 <= event.x <= 40:
-            self.toggle_play_stop()
+            self.toggle_play_pause()
             return
 
         # 4. Speaker / Mute Button Click
