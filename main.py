@@ -1,258 +1,333 @@
-from __future__ import annotations
-
-import argparse
+import os
 import sys
+import time
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox
+# Ensure src is in Python path
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
 
-from pipeline import (
-    DEFAULT_BACKGROUND_VOLUME,
-    DEFAULT_VOICE_GENDER,
-    WorkflowConfig,
-    download_video_from_url,
-    normalize_language_code,
-    normalize_voice_gender,
-    run_workflow,
-)
-
-
-def prompt_text(label: str, default: str | None = None) -> str:
-    suffix = f" [{default}]" if default else ""
-    value = input(f"{label}{suffix}: ").strip()
-    return value or (default or "")
+from src.ui import RoundedCard, RoundedButton, RoundedProgressBar, YouTubePlayerView
+from src.core import VideoEngine
 
 
-def prompt_bool(label: str, default: bool = True) -> bool:
-    suffix = " [Y/n]: " if default else " [y/N]: "
-    value = input(f"{label}{suffix}").strip().lower()
-    if not value:
-        return default
-    return value in {"y", "yes", "1", "true"}
+class VideoTranslateApp(tk.Tk):
+    """Main Application Controller for Video Translate."""
 
+    def __init__(self):
+        super().__init__()
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Transcribe a video, translate subtitles to Khmer, and optionally create Khmer voiceover."
-    )
-    parser.add_argument("text", nargs="?", help="Optional source text if you want text-first mode")
-    parser.add_argument("--text-file", help="Path to a UTF-8 text file with source text")
-    parser.add_argument("--video", help="Path to the input video file")
-    parser.add_argument("--video-url", help="Download a video from a link or copied share text, for example a Douyin URL")
-    parser.add_argument(
-        "--cookies-from-browser",
-        default="",
-        help="Browser to load fresh cookies from for video links, for example edge, chrome, or firefox",
-    )
-    parser.add_argument("--cookies", default="", help="Netscape cookies.txt file for video link downloads")
-    parser.add_argument("--gui", action="store_true", help="Launch the desktop UI")
-    parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="Prompt for missing inputs in the terminal",
-    )
-    parser.add_argument(
-        "--speech-lang",
-        default="auto",
-        help="Speech recognition language code for the video audio, for example auto, en-US, or zh-CN",
-    )
-    parser.add_argument("--source-lang", default="auto", help="Source language code for translation, for example auto or zh-CN")
-    parser.add_argument("--target-lang", default="km", help="Target language code for translation, for example km or zh-CN")
-    parser.add_argument("--voice-lang", default="km", help="Language code for text-to-speech, for example km or zh-CN")
-    parser.add_argument(
-        "--voice-gender",
-        default=DEFAULT_VOICE_GENDER,
-        choices=("female", "male", "auto"),
-        help="Generated voice gender: female, male, or auto",
-    )
-    parser.add_argument(
-        "--transcription-engine",
-        default="auto",
-        help="Transcription engine: auto, google, whisper, or faster-whisper",
-    )
-    parser.add_argument(
-        "--whisper-model",
-        default="medium",
-        help="Whisper model size, for example small, medium, or large-v3",
-    )
-    parser.add_argument(
-        "--hf-token",
-        default="",
-        help="Optional Hugging Face access token for faster-whisper downloads",
-    )
-    parser.add_argument(
-        "--repair-transcript-with-ollama",
-        action="store_true",
-        help="Use Ollama to polish the transcript after speech recognition",
-    )
-    parser.add_argument(
-        "--ollama-model",
-        default="llava:latest",
-        help="Ollama model name used for transcript repair",
-    )
-    parser.add_argument(
-        "--skip-translation",
-        action="store_true",
-        help="Use the source text directly instead of translating it first",
-    )
-    parser.add_argument(
-        "--skip-voice",
-        action="store_true",
-        help="Create subtitles and Khmer text only, without voice generation or video audio merge",
-    )
-    parser.add_argument(
-        "--transcript-out",
-        default="transcript_original.txt",
-        help="File path to save the original transcript text",
-    )
-    parser.add_argument(
-        "--subtitle-out",
-        default="subtitles_original.srt",
-        help="File path to save the original subtitles",
-    )
-    parser.add_argument(
-        "--translated-subtitle-out",
-        default="subtitles_khmer.srt",
-        help="File path to save the translated Khmer subtitles",
-    )
-    parser.add_argument(
-        "--translated-text-out",
-        default="translated_khmer.txt",
-        help="File path to save the translated Khmer script",
-    )
-    parser.add_argument("--audio-out", default="narration.mp3", help="Output MP3 narration path")
-    parser.add_argument("--output", default="final_output.mp4", help="Output MP4 path")
-    audio_group = parser.add_mutually_exclusive_group()
-    audio_group.add_argument(
-        "--remove-original-voice",
-        dest="preserve_background_audio",
-        action="store_true",
-        help="Remove the centered original voice while keeping background sound where possible (default)",
-    )
-    audio_group.add_argument(
-        "--remove-original-audio",
-        dest="preserve_background_audio",
-        action="store_false",
-        help="Remove all original video audio and use only the generated narration in the final video",
-    )
-    audio_group.add_argument(
-        "--keep-original-audio",
-        dest="keep_original_audio",
-        action="store_true",
-        help="Mix the narration with the original video audio instead of replacing it",
-    )
-    parser.set_defaults(keep_original_audio=False, preserve_background_audio=True)
-    parser.add_argument(
-        "--original-volume",
-        type=float,
-        default=DEFAULT_BACKGROUND_VOLUME,
-        help="Volume multiplier for the original video audio when mixing",
-    )
-    parser.add_argument(
-        "--slow-voice",
-        action="store_true",
-        help="Generate slower narration for easier listening",
-    )
-    parser.add_argument(
-        "--chunk-seconds",
-        type=int,
-        default=5,
-        help="Subtitle chunk length for speech recognition in seconds",
-    )
-    return parser
+        # --- Window Setup ---
+        self.title("Video Translate")
+        self.geometry("800x480")
+        self.minsize(740, 440)
+        self.configure(bg="#f1f5f9")
 
+        # Core Video Engine
+        self.engine = VideoEngine(base_dir=APP_DIR)
 
-def launch_gui() -> None:
-    from ui import launch_gui as launch_gui_app
+        # Variables
+        self.video_path_var = tk.StringVar(value="")
+        default_downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+        self.output_folder = default_downloads if os.path.exists(default_downloads) else os.path.expanduser("~")
 
-    launch_gui_app()
+        self.voice_type = "Man"
+        self.status_var = tk.StringVar(value="Ready")
+        self.is_processing = False
 
+        # Build UI Layout
+        self._create_layout()
 
-def fill_missing_inputs(args: argparse.Namespace) -> None:
-    if not args.video and not args.video_url:
-        args.video = prompt_text("Video path")
+        # Clean shutdown protocol
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    if not args.text and not args.text_file:
-        print("No text was provided, so the tool will transcribe the video audio into subtitles.")
-        args.speech_lang = prompt_text("Speech language code", args.speech_lang)
-        args.skip_voice = not prompt_bool("Generate Khmer voiceover", default=True)
-        if not args.skip_voice:
-            args.voice_gender = normalize_voice_gender(
-                prompt_text("Voice gender (female, male, or auto)", args.voice_gender),
-                default=DEFAULT_VOICE_GENDER,
-            )
-            args.keep_original_audio = prompt_bool(
-                "Keep full original video audio in the background",
-                default=False,
-            )
-            if not args.keep_original_audio:
-                args.preserve_background_audio = prompt_bool(
-                    "Keep background sound while removing original voice",
-                    default=True,
-                )
-            if args.keep_original_audio or args.preserve_background_audio:
-                volume_text = prompt_text("Original audio volume between 0 and 1", str(args.original_volume))
-                args.original_volume = float(volume_text)
+    def _on_close(self):
+        """Ensure stream processes and audio player are closed gracefully."""
+        if hasattr(self, "player_view"):
+            self.player_view.destroy()
+        self.destroy()
 
+    def _create_layout(self):
+        """Construct the 2-column layout (Left: Unified YouTube Player, Right: 4 Controls) & Bottom Progress Bar."""
 
-def build_config(args: argparse.Namespace) -> WorkflowConfig:
-    return WorkflowConfig(
-        video=args.video or "",
-        text=args.text,
-        text_file=args.text_file,
-        speech_lang=normalize_language_code(args.speech_lang, default="auto"),
-        source_lang=normalize_language_code(args.source_lang, default="auto"),
-        target_lang=normalize_language_code(args.target_lang, default="km"),
-        voice_lang=normalize_language_code(args.voice_lang, default="km"),
-        voice_gender=normalize_voice_gender(args.voice_gender, default=DEFAULT_VOICE_GENDER),
-        transcription_engine=args.transcription_engine,
-        whisper_model=args.whisper_model,
-        hf_token=args.hf_token,
-        repair_transcript_with_ollama=args.repair_transcript_with_ollama,
-        ollama_model=args.ollama_model,
-        skip_translation=args.skip_translation,
-        skip_voice=args.skip_voice,
-        transcript_out=args.transcript_out,
-        subtitle_out=args.subtitle_out,
-        translated_subtitle_out=args.translated_subtitle_out,
-        translated_text_out=args.translated_text_out,
-        audio_out=args.audio_out,
-        output=args.output,
-        keep_original_audio=args.keep_original_audio,
-        preserve_background_audio=args.preserve_background_audio and not args.keep_original_audio,
-        original_volume=args.original_volume,
-        slow_voice=args.slow_voice,
-        chunk_seconds=args.chunk_seconds,
-    )
+        content_frame = tk.Frame(self, bg="#f1f5f9", bd=0, highlightthickness=0)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
 
-
-def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
-
-    if len(sys.argv) == 1 or args.gui:
-        launch_gui()
-        return
-
-    try:
-        if args.interactive:
-            fill_missing_inputs(args)
-
-        if args.video_url and not args.video:
-            args.video = download_video_from_url(
-                args.video_url,
-                logger=print,
-                cookies_browser=args.cookies_from_browser,
-                cookies_file=args.cookies,
-            )
-
-        run_workflow(build_config(args), logger=print)
-    except Exception as exc:
-        parser.exit(
-            status=1,
-            message=(
-                f"Error: {exc}\n"
-                "Hint: subtitle transcription, translation, and gTTS all require internet access.\n"
-            ),
+        # ==========================================
+        # LEFT COLUMN: Rounded Card for Unified YouTube Video Player
+        # ==========================================
+        self.left_card = RoundedCard(
+            content_frame,
+            bg_color="#ffffff",
+            border_color="#e2e8f0",
+            radius=16
         )
+        self.left_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 12))
 
+        preview_header = tk.Label(
+            self.left_card.container,
+            text="Video Preview",
+            bg="#ffffff",
+            fg="#0f172a",
+            font=("Segoe UI", 11, "bold")
+        )
+        preview_header.pack(anchor="w", pady=(0, 6))
+
+        # Unified YouTube Video Player Screen
+        self.player_view = YouTubePlayerView(
+            self.left_card.container,
+            on_status_change=lambda msg: self.status_var.set(msg),
+            radius=12
+        )
+        self.player_view.pack(fill=tk.BOTH, expand=True)
+
+        # ==========================================
+        # RIGHT COLUMN: Rounded Card for 4 Controls
+        # 1. Load: Pick and load video file (Top)
+        # 2. Browse: Choose save/output location (Default: Downloads)
+        # 3. Voice: Toggle Man / Woman
+        # 4. Start: Start dubbing process
+        # ==========================================
+        self.right_card = RoundedCard(
+            content_frame,
+            bg_color="#ffffff",
+            border_color="#e2e8f0",
+            radius=16,
+            width=220
+        )
+        self.right_card.pack(side=tk.RIGHT, fill=tk.Y)
+        self.right_card.pack_propagate(False)
+
+        right_title = tk.Label(
+            self.right_card.container,
+            text="Controls",
+            bg="#ffffff",
+            fg="#0f172a",
+            font=("Segoe UI", 11, "bold")
+        )
+        right_title.pack(anchor="center", pady=(0, 10))
+
+        # Button 1: Load (Top position, loads video directly into player)
+        self.btn_load = RoundedButton(
+            self.right_card.container,
+            text="Load",
+            command=self.load_video,
+            bg_color="#0284c7",
+            hover_color="#0369a1",
+            text_color="#ffffff",
+            radius=12,
+            height=40
+        )
+        self.btn_load.pack(fill=tk.X, pady=(0, 10))
+
+        # Button 2: Browse (Picks destination folder where dubbed video is saved)
+        self.btn_browse = RoundedButton(
+            self.right_card.container,
+            text="Browse",
+            command=self.browse_output_folder,
+            bg_color="#6366f1",
+            hover_color="#4f46e5",
+            text_color="#ffffff",
+            radius=12,
+            height=40
+        )
+        self.btn_browse.pack(fill=tk.X, pady=(0, 10))
+
+        # Button 3: Toggle Voice Button (Man / Woman on click, no emoji)
+        self.btn_voice_toggle = RoundedButton(
+            self.right_card.container,
+            text="Voice: Man",
+            command=self.toggle_voice,
+            bg_color="#ea580c",
+            hover_color="#c2410c",
+            text_color="#ffffff",
+            radius=12,
+            height=40
+        )
+        self.btn_voice_toggle.pack(fill=tk.X, pady=(0, 12))
+
+        # Button 4: Start (Starts dubbing and saves to output folder)
+        self.btn_start = RoundedButton(
+            self.right_card.container,
+            text="Start",
+            command=self.start_dubbing,
+            bg_color="#10b981",
+            hover_color="#059669",
+            text_color="#ffffff",
+            radius=12,
+            height=42,
+            font=("Segoe UI", 11, "bold")
+        )
+        self.btn_start.pack(fill=tk.X, side=tk.BOTTOM, pady=(8, 0))
+
+        # ==========================================
+        # BOTTOM: ONLY ONE Rounded Progress Bar & Status
+        # ==========================================
+        bottom_frame = tk.Frame(self, bg="#f1f5f9", bd=0, highlightthickness=0)
+        bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=(0, 12))
+
+        status_box = tk.Frame(bottom_frame, bg="#f1f5f9", bd=0, highlightthickness=0)
+        status_box.pack(fill=tk.X, pady=(0, 5))
+
+        self.status_label = tk.Label(
+            status_box,
+            textvariable=self.status_var,
+            bg="#f1f5f9",
+            fg="#2563eb",
+            font=("Segoe UI", 9, "italic")
+        )
+        self.status_label.pack(side=tk.LEFT)
+
+        self.percent_label = tk.Label(
+            status_box,
+            text="0%",
+            bg="#f1f5f9",
+            fg="#0f172a",
+            font=("Segoe UI", 9, "bold")
+        )
+        self.percent_label.pack(side=tk.RIGHT)
+
+        # Smooth Rounded Progress Bar
+        self.progress_bar = RoundedProgressBar(
+            bottom_frame,
+            height=14,
+            trough_color="#e2e8f0",
+            fill_color="#10b981",
+            radius=7
+        )
+        self.progress_bar.pack(fill=tk.X)
+
+    # ==========================================
+    # Button Actions
+    # ==========================================
+    def load_video(self):
+        """Action 1 (Load): Select input video file and immediately load into player."""
+        filetypes = [
+            ("Video Files", "*.mp4 *.mkv *.avi *.mov *.wmv *.flv"),
+            ("All Files", "*.*")
+        ]
+        selected_file = filedialog.askopenfilename(
+            title="Select Video to Dub",
+            filetypes=filetypes
+        )
+        if not selected_file:
+            return
+
+        if not os.path.exists(selected_file):
+            messagebox.showerror("Error", "File not found! Please check file path.")
+            return
+
+        self.video_path_var.set(selected_file)
+        filename = os.path.basename(selected_file)
+
+        # Load video and extract real frames via VideoEngine
+        self.player_view.load_video(selected_file)
+        self.status_var.set("Ready")
+
+    def browse_output_folder(self):
+        """Action 2 (Browse): Select destination folder where the dubbed video will be stored."""
+        selected_dir = filedialog.askdirectory(
+            title="Select Folder to Save Dubbed Video",
+            initialdir=self.output_folder
+        )
+        if selected_dir:
+            self.output_folder = selected_dir
+            self.status_var.set("Ready")
+
+    def toggle_voice(self):
+        """Action 3 (Voice): Toggle between Man and Woman on each click."""
+        if self.voice_type == "Man":
+            self.voice_type = "Woman"
+            self.btn_voice_toggle.set_text("Voice: Woman")
+            self.btn_voice_toggle.set_colors("#db2777", "#be185d")
+        else:
+            self.voice_type = "Man"
+            self.btn_voice_toggle.set_text("Voice: Man")
+            self.btn_voice_toggle.set_colors("#ea580c", "#c2410c")
+
+    def start_dubbing(self):
+        """Action 4 (Start): Start dubbing and save output to the destination folder."""
+        filepath = self.video_path_var.get()
+        if not filepath:
+            messagebox.showwarning("Notice", "Please click 'Load' to select a video first!")
+            return
+
+        if self.is_processing:
+            messagebox.showinfo("In Progress", "Dubbing is already in progress.")
+            return
+
+        # Stop playback if currently running
+        if self.player_view.is_playing:
+            self.player_view.toggle_play_stop()
+
+        # Disable buttons during processing
+        self.is_processing = True
+        self.btn_load.set_state(tk.DISABLED)
+        self.btn_browse.set_state(tk.DISABLED)
+        self.btn_voice_toggle.set_state(tk.DISABLED)
+        self.btn_start.set_state(tk.DISABLED)
+
+        self.progress_bar.set_progress(0)
+        self.percent_label.config(text="0%")
+
+        # Target output filename
+        base_name = os.path.splitext(os.path.basename(filepath))[0]
+        output_filename = f"{base_name}_dubbed_{self.voice_type.lower()}.mp4"
+        output_full_path = os.path.join(self.output_folder, output_filename)
+
+        thread = threading.Thread(
+            target=self._dubbing_worker,
+            args=(filepath, self.voice_type, output_full_path),
+            daemon=True
+        )
+        thread.start()
+
+    def _dubbing_worker(self, filepath, voice, output_path):
+        """Worker thread executing audio extraction and dubbing pipeline."""
+        steps = [
+            (20, "Extracting audio..."),
+            (50, f"Generating {voice} voice..."),
+            (80, "Merging video..."),
+            (100, "Complete!")
+        ]
+
+        # Extract audio using real VideoEngine
+        self.engine.extract_audio(filepath)
+
+        try:
+            for target_percent, step_status in steps:
+                current = int(self.progress_bar.get_progress())
+                while current < target_percent:
+                    time.sleep(0.03)
+                    current += 1
+                    self.progress_bar.set_progress(current)
+                    self.percent_label.config(text=f"{current}%")
+
+                self.status_var.set(step_status)
+                time.sleep(0.3)
+
+            # Prompt success with output location
+            self.after(200, lambda: messagebox.showinfo(
+                "Success! 🎉",
+                f"Video dubbed successfully with {voice} voice!\n\n"
+                f"Saved to:\n{output_path}"
+            ))
+        except Exception as e:
+            self.status_var.set(f"Error: {e}")
+        finally:
+            self.is_processing = False
+            self.btn_load.set_state(tk.NORMAL)
+            self.btn_browse.set_state(tk.NORMAL)
+            self.btn_voice_toggle.set_state(tk.NORMAL)
+            self.btn_start.set_state(tk.NORMAL)
+
+
+# Backward compatibility alias
+VideoDubbingApp = VideoTranslateApp
 
 if __name__ == "__main__":
-    main()
+    app = VideoTranslateApp()
+    app.mainloop()
+    app.destroy()
