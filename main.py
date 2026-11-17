@@ -1,12 +1,14 @@
 """
-Video Translate Application
-Created for: បង LIHOUR
-Developed by: ប្អូនហនុមាន (Hanuman)
+Video Translate & AI Subtitle Tool
+Professional High-Performance Desktop Application with Unified Media Player & Script Extractor.
 """
+
+from __future__ import annotations
 
 import os
 import sys
 import time
+import queue
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -17,23 +19,26 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 from src.ui import RoundedCard, RoundedButton, RoundedProgressBar, YouTubePlayerView
-from src.core import VideoEngine
+from src.core import VideoEngine, ScriptExtractor
 
 
 class VideoTranslateApp(tk.Tk):
-    """Main Application Controller for Video Translate."""
+    """Main Application Controller for Video Translate & Subtitle Studio."""
 
     def __init__(self):
         super().__init__()
 
         # --- Window Setup ---
-        self.title("Video Translate")
-        self.geometry("800x480")
-        self.minsize(740, 440)
+        self.title("Video Translate & Subtitle Studio")
+        self.geometry("820x490")
+        self.minsize(760, 460)
+        # Lock window aspect ratio to maintain stable proportions on resize (avoiding flat/ultra-wide window)
+        self.aspect(14, 10, 18, 10)
         self.configure(bg="#f1f5f9")
 
-        # Core Video Engine
+        # Core Engines
         self.engine = VideoEngine(base_dir=APP_DIR)
+        self.script_extractor = ScriptExtractor(model_size="base")
 
         # Variables
         self.video_path_var = tk.StringVar(value="")
@@ -44,8 +49,14 @@ class VideoTranslateApp(tk.Tk):
         self.status_var = tk.StringVar(value="Ready")
         self.is_processing = False
 
+        # Thread-safe UI Task Queue (handles Python 3.15 background worker updates)
+        self.ui_queue = queue.Queue()
+
         # Build UI Layout
         self._create_layout()
+
+        # Start UI queue polling loop
+        self._poll_ui_queue()
 
         # Clean shutdown protocol
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -57,7 +68,7 @@ class VideoTranslateApp(tk.Tk):
         self.destroy()
 
     def _create_layout(self):
-        """Construct the 2-column layout (Left: Unified YouTube Player, Right: 4 Controls) & Bottom Progress Bar."""
+        """Construct the 2-column layout (Left: Unified YouTube Player, Right: Controls) & Bottom Progress Bar."""
 
         content_frame = tk.Frame(self, bg="#f1f5f9", bd=0, highlightthickness=0)
         content_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
@@ -91,18 +102,19 @@ class VideoTranslateApp(tk.Tk):
         self.player_view.pack(fill=tk.BOTH, expand=True)
 
         # ==========================================
-        # RIGHT COLUMN: Rounded Card for 4 Controls
+        # RIGHT COLUMN: Rounded Card for Controls
         # 1. Load: Pick and load video file (Top)
-        # 2. Browse: Choose save/output location (Default: Downloads)
-        # 3. Voice: Toggle Man / Woman
-        # 4. Start: Start dubbing process
+        # 2. Extract Script (SRT): Generate subtitles with timestamps
+        # 3. Browse: Choose save/output location
+        # 4. Voice: Toggle Man / Woman
+        # 5. Start: Start dubbing process
         # ==========================================
         self.right_card = RoundedCard(
             content_frame,
             bg_color="#ffffff",
             border_color="#e2e8f0",
             radius=16,
-            width=220
+            width=230
         )
         self.right_card.pack(side=tk.RIGHT, fill=tk.Y)
         self.right_card.pack_propagate(False)
@@ -114,35 +126,48 @@ class VideoTranslateApp(tk.Tk):
             fg="#0f172a",
             font=("Segoe UI", 11, "bold")
         )
-        right_title.pack(anchor="center", pady=(0, 10))
+        right_title.pack(anchor="center", pady=(0, 8))
 
         # Button 1: Load (Top position, loads video directly into player)
         self.btn_load = RoundedButton(
             self.right_card.container,
-            text="Load",
+            text="Load Video",
             command=self.load_video,
             bg_color="#0284c7",
             hover_color="#0369a1",
             text_color="#ffffff",
             radius=12,
-            height=40
+            height=36
         )
-        self.btn_load.pack(fill=tk.X, pady=(0, 10))
+        self.btn_load.pack(fill=tk.X, pady=(0, 8))
 
-        # Button 2: Browse (Picks destination folder where dubbed video is saved)
+        # Button 2: Extract Script (SRT Subtitles with Timestamps)
+        self.btn_extract_script = RoundedButton(
+            self.right_card.container,
+            text="Extract Script (SRT)",
+            command=self.extract_script,
+            bg_color="#7c3aed",
+            hover_color="#6d28d9",
+            text_color="#ffffff",
+            radius=12,
+            height=36
+        )
+        self.btn_extract_script.pack(fill=tk.X, pady=(0, 8))
+
+        # Button 3: Browse (Picks destination folder where outputs are saved)
         self.btn_browse = RoundedButton(
             self.right_card.container,
-            text="Browse",
+            text="Browse Output",
             command=self.browse_output_folder,
             bg_color="#6366f1",
             hover_color="#4f46e5",
             text_color="#ffffff",
             radius=12,
-            height=40
+            height=36
         )
-        self.btn_browse.pack(fill=tk.X, pady=(0, 10))
+        self.btn_browse.pack(fill=tk.X, pady=(0, 8))
 
-        # Button 3: Toggle Voice Button (Man / Woman on click, no emoji)
+        # Button 4: Toggle Voice Button (Man / Woman)
         self.btn_voice_toggle = RoundedButton(
             self.right_card.container,
             text="Voice: Man",
@@ -151,26 +176,26 @@ class VideoTranslateApp(tk.Tk):
             hover_color="#c2410c",
             text_color="#ffffff",
             radius=12,
-            height=40
+            height=36
         )
-        self.btn_voice_toggle.pack(fill=tk.X, pady=(0, 12))
+        self.btn_voice_toggle.pack(fill=tk.X, pady=(0, 8))
 
-        # Button 4: Start (Starts dubbing and saves to output folder)
+        # Button 5: Start Dubbing (Bottom position)
         self.btn_start = RoundedButton(
             self.right_card.container,
-            text="Start",
+            text="Start Dubbing",
             command=self.start_dubbing,
             bg_color="#10b981",
             hover_color="#059669",
             text_color="#ffffff",
             radius=12,
-            height=42,
-            font=("Segoe UI", 11, "bold")
+            height=38,
+            font=("Segoe UI", 10, "bold")
         )
-        self.btn_start.pack(fill=tk.X, side=tk.BOTTOM, pady=(8, 0))
+        self.btn_start.pack(fill=tk.X, side=tk.BOTTOM, pady=(6, 0))
 
         # ==========================================
-        # BOTTOM: ONLY ONE Rounded Progress Bar & Status
+        # BOTTOM: Unified Rounded Progress Bar & Status
         # ==========================================
         bottom_frame = tk.Frame(self, bg="#f1f5f9", bd=0, highlightthickness=0)
         bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=(0, 12))
@@ -206,17 +231,54 @@ class VideoTranslateApp(tk.Tk):
         )
         self.progress_bar.pack(fill=tk.X)
 
+    def _set_controls_state(self, state):
+        """Enable or disable all control buttons safely."""
+        self.btn_load.set_state(state)
+        self.btn_extract_script.set_state(state)
+        self.btn_browse.set_state(state)
+        self.btn_voice_toggle.set_state(state)
+        self.btn_start.set_state(state)
+
+    def _poll_ui_queue(self):
+        """Poll thread-safe UI task queue on Tkinter's main event loop."""
+        while not self.ui_queue.empty():
+            try:
+                fn = self.ui_queue.get_nowait()
+                fn()
+            except queue.Empty:
+                break
+            except Exception as e:
+                print(f"[UI Queue Error]: {e}")
+        self.after(30, self._poll_ui_queue)
+
+    def run_on_ui_thread(self, fn):
+        """Safely schedule any UI action to run on the main Tkinter thread."""
+        self.ui_queue.put(fn)
+
+    def set_controls_state_safe(self, state):
+        """Thread-safe control state dispatcher."""
+        self.run_on_ui_thread(lambda: self._set_controls_state(state))
+
+    def update_progress_safe(self, status: str, percent: int):
+        """Thread-safe UI dispatcher using Tkinter's after queue."""
+        def _apply():
+            if status:
+                self.status_var.set(status)
+            self.progress_bar.set_progress(percent)
+            self.percent_label.config(text=f"{int(percent)}%")
+        self.run_on_ui_thread(_apply)
+
     # ==========================================
     # Button Actions
     # ==========================================
     def load_video(self):
         """Action 1 (Load): Select input video file and immediately load into player."""
         filetypes = [
-            ("Video Files", "*.mp4 *.mkv *.avi *.mov *.wmv *.flv"),
+            ("Video Files", "*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm"),
             ("All Files", "*.*")
         ]
         selected_file = filedialog.askopenfilename(
-            title="Select Video to Dub",
+            title="Select Video to Load",
             filetypes=filetypes
         )
         if not selected_file:
@@ -227,16 +289,87 @@ class VideoTranslateApp(tk.Tk):
             return
 
         self.video_path_var.set(selected_file)
-        filename = os.path.basename(selected_file)
 
-        # Load video and extract real frames via VideoEngine
+        # Load video and extract first frame via VideoEngine
         self.player_view.load_video(selected_file)
         self.status_var.set("Ready")
 
+    def extract_script(self):
+        """Action 2 (Extract Script): Generate standard .srt subtitles from the video."""
+        filepath = self.video_path_var.get()
+        if not filepath:
+            messagebox.showwarning("Notice", "Please click 'Load Video' first!")
+            return
+
+        if self.is_processing:
+            messagebox.showinfo("In Progress", "Another task is already in progress.")
+            return
+
+        # Pause video playback if currently running
+        if hasattr(self, "player_view") and self.player_view.is_playing:
+            self.player_view.toggle_play_stop()
+
+        # Prepare destination .srt path
+        base_name = os.path.splitext(os.path.basename(filepath))[0]
+        output_srt_path = os.path.join(self.output_folder, f"{base_name}_subtitles.srt")
+
+        self.is_processing = True
+        self._set_controls_state(tk.DISABLED)
+        self.progress_bar.set_progress(0)
+        self.percent_label.config(text="0%")
+        self.status_var.set("Initializing speech recognition engine...")
+
+        thread = threading.Thread(
+            target=self._extract_script_worker,
+            args=(filepath, output_srt_path),
+            daemon=True
+        )
+        thread.start()
+
+    def _extract_script_worker(self, filepath, output_srt_path):
+        """Worker thread executing speech transcription into .srt file."""
+        def on_progress(msg, pct):
+            self.update_progress_safe(msg, pct)
+
+        try:
+            srt_content = self.script_extractor.extract_script_to_srt(
+                video_path=filepath,
+                output_srt_path=output_srt_path,
+                on_progress=on_progress
+            )
+
+            # Sample preview of first 6 subtitle lines
+            lines = [l for l in srt_content.strip().splitlines() if l.strip()]
+            preview_sample = "\n".join(lines[:6]) if lines else "No speech detected."
+
+            self.run_on_ui_thread(lambda p=output_srt_path, s=preview_sample: messagebox.showinfo(
+                "Script Extracted Successfully! 🎉",
+                f"Generated SubRip (.srt) subtitle file:\n\n"
+                f"Saved to:\n{p}\n\n"
+                f"Preview:\n{s}"
+            ))
+        except RuntimeError as re:
+            err_re = str(re)
+            self.update_progress_safe("Missing dependency", 0)
+            self.run_on_ui_thread(lambda m=err_re: messagebox.showerror(
+                "Missing Dependency",
+                m
+            ))
+        except Exception as exc:
+            err_exc = str(exc)
+            self.update_progress_safe(f"Extraction Error: {err_exc}", 0)
+            self.run_on_ui_thread(lambda m=err_exc: messagebox.showerror(
+                "Error",
+                f"Failed to extract script:\n{m}"
+            ))
+        finally:
+            self.is_processing = False
+            self.set_controls_state_safe(tk.NORMAL)
+
     def browse_output_folder(self):
-        """Action 2 (Browse): Select destination folder where the dubbed video will be stored."""
+        """Action 3 (Browse): Select destination folder where outputs will be stored."""
         selected_dir = filedialog.askdirectory(
-            title="Select Folder to Save Dubbed Video",
+            title="Select Output Folder",
             initialdir=self.output_folder
         )
         if selected_dir:
@@ -244,7 +377,7 @@ class VideoTranslateApp(tk.Tk):
             self.status_var.set("Ready")
 
     def toggle_voice(self):
-        """Action 3 (Voice): Toggle between Man and Woman on each click."""
+        """Action 4 (Voice): Toggle between Man and Woman on each click."""
         if self.voice_type == "Man":
             self.voice_type = "Woman"
             self.btn_voice_toggle.set_text("Voice: Woman")
@@ -255,26 +388,22 @@ class VideoTranslateApp(tk.Tk):
             self.btn_voice_toggle.set_colors("#ea580c", "#c2410c")
 
     def start_dubbing(self):
-        """Action 4 (Start): Start dubbing and save output to the destination folder."""
+        """Action 5 (Start): Start dubbing and save output to the destination folder."""
         filepath = self.video_path_var.get()
         if not filepath:
-            messagebox.showwarning("Notice", "Please click 'Load' to select a video first!")
+            messagebox.showwarning("Notice", "Please click 'Load Video' first!")
             return
 
         if self.is_processing:
-            messagebox.showinfo("In Progress", "Dubbing is already in progress.")
+            messagebox.showinfo("In Progress", "A task is already in progress.")
             return
 
         # Stop playback if currently running
         if self.player_view.is_playing:
             self.player_view.toggle_play_stop()
 
-        # Disable buttons during processing
         self.is_processing = True
-        self.btn_load.set_state(tk.DISABLED)
-        self.btn_browse.set_state(tk.DISABLED)
-        self.btn_voice_toggle.set_state(tk.DISABLED)
-        self.btn_start.set_state(tk.DISABLED)
+        self._set_controls_state(tk.DISABLED)
 
         self.progress_bar.set_progress(0)
         self.percent_label.config(text="0%")
@@ -309,26 +438,21 @@ class VideoTranslateApp(tk.Tk):
                 while current < target_percent:
                     time.sleep(0.03)
                     current += 1
-                    self.progress_bar.set_progress(current)
-                    self.percent_label.config(text=f"{current}%")
+                    self.update_progress_safe(step_status, current)
 
-                self.status_var.set(step_status)
                 time.sleep(0.3)
 
             # Prompt success with output location
-            self.after(200, lambda: messagebox.showinfo(
+            self.run_on_ui_thread(lambda: messagebox.showinfo(
                 "Success! 🎉",
                 f"Video dubbed successfully with {voice} voice!\n\n"
                 f"Saved to:\n{output_path}"
             ))
         except Exception as e:
-            self.status_var.set(f"Error: {e}")
+            self.update_progress_safe(f"Error: {e}", 0)
         finally:
             self.is_processing = False
-            self.btn_load.set_state(tk.NORMAL)
-            self.btn_browse.set_state(tk.NORMAL)
-            self.btn_voice_toggle.set_state(tk.NORMAL)
-            self.btn_start.set_state(tk.NORMAL)
+            self.set_controls_state_safe(tk.NORMAL)
 
 
 # Backward compatibility alias
@@ -337,3 +461,7 @@ VideoDubbingApp = VideoTranslateApp
 if __name__ == "__main__":
     app = VideoTranslateApp()
     app.mainloop()
+    try:
+        app.destroy()
+    except Exception:
+        pass

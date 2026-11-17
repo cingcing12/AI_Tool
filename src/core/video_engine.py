@@ -177,6 +177,15 @@ class VideoEngine:
         except Exception:
             return None
 
+    def create_video_stream(self, filepath, start_time, target_w, target_h, fps=25):
+        """
+        Backward compatible alias returning just the streaming subprocess.
+        """
+        res = self.start_video_stream(filepath, start_time, target_w, target_h, fps)
+        if res:
+            return res[0]
+        return None
+
     def extract_audio(self, filepath, output_wav=None):
         """Extract audio track as standard 16kHz mono WAV for dubbing."""
         if not os.path.exists(filepath) or not os.path.exists(self.ffmpeg_path):
