@@ -285,14 +285,14 @@ class ScriptExtractor:
         self,
         audio_path: str,
         total_duration: float,
-        target_interval: float = 6.0,
-        search_window: float = 1.8
+        target_interval: float = 4.8,
+        search_window: float = 1.4
     ) -> List[Tuple[float, float]]:
         """
         Generate continuous, non-overlapping speech intervals split at natural quiet moments.
         - Zero Overlap: Completely eliminates duplicate/repeated words.
         - Zero Cutoff: Splits at audio volume valleys so words are never cut in half.
-        - Stable Chunk Duration (4.5s - 7.5s): Optimal for Google Speech Recognition accuracy.
+        - Sweet-Spot Duration (3.8s - 5.5s): Optimal for Google Speech Recognition accuracy and realtime voice sync.
         """
         import wave
         import numpy as np
@@ -313,11 +313,11 @@ class ScriptExtractor:
             samples = None
 
         if samples is None or len(samples) == 0 or sr <= 0:
-            # Fallback to continuous non-overlapping 5.5s intervals
+            # Fallback to continuous non-overlapping 4.8s intervals
             intervals: List[Tuple[float, float]] = []
             t = 0.0
             while t < total_duration:
-                step = min(5.5, total_duration - t)
+                step = min(4.8, total_duration - t)
                 if step >= 0.5:
                     intervals.append((round(t, 3), round(t + step, 3)))
                 t += step
@@ -330,11 +330,11 @@ class ScriptExtractor:
 
         while t_start < actual_duration - 0.5:
             target_t = t_start + target_interval
-            if target_t >= actual_duration - 1.2:
+            if target_t >= actual_duration - 1.0:
                 intervals.append((round(t_start, 3), round(actual_duration, 3)))
                 break
 
-            s_sec = max(t_start + 3.5, target_t - half_w)
+            s_sec = max(t_start + 2.8, target_t - half_w)
             e_sec = min(actual_duration, target_t + half_w)
             s_idx = int(s_sec * sr)
             e_idx = int(e_sec * sr)

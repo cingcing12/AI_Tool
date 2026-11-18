@@ -217,29 +217,58 @@ class DubbingEngine:
         return khmer_segments, full_khmer_script
 
     def synthesize_single_line(self, text: str, voice_type: str, output_path: str) -> bool:
-        """Synthesize a single line of Khmer speech using Edge TTS with gTTS fallback."""
+        """Synthesize a single line of Khmer speech using Edge TTS with pitch-matched gTTS fallback."""
         voice_gender = voice_type.lower()
-        edge_voice = "km-KH-PisethNeural" if "man" in voice_gender or "male" in voice_gender else "km-KH-SreymomNeural"
+        is_man = "man" in voice_gender or "male" in voice_gender
+        edge_voice = "km-KH-PisethNeural" if is_man else "km-KH-SreymomNeural"
 
-        # 1. Edge TTS (High-Quality Authentic Neural Voices)
-        try:
-            import edge_tts
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            communicate = edge_tts.Communicate(text, edge_voice)
-            loop.run_until_complete(communicate.save(output_path))
-            loop.close()
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                return True
-        except Exception:
-            pass
+        # 1. Edge TTS with rate="+0%" (Prevents Microsoft Azure from rejecting non-Latin SSML)
+        for attempt in range(2):
+            try:
+                import edge_tts
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                communicate = edge_tts.Communicate(text.strip(), edge_voice, rate="+0%")
+                loop.run_until_complete(communicate.save(output_path))
+                loop.close()
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                    return True
+            except Exception:
+                pass
 
-        # 2. gTTS fallback
+        # 2. gTTS fallback (Guaranteed to match requested gender!)
         try:
             from gtts import gTTS
+            raw_fallback = output_path + ".fallback.mp3"
             tts = gTTS(text, lang="km")
-            tts.save(output_path)
-            return os.path.exists(output_path) and os.path.getsize(output_path) > 0
+            tts.save(raw_fallback)
+            if os.path.exists(raw_fallback) and os.path.getsize(raw_fallback) > 100:
+                if is_man:
+                    # Convert gTTS female audio to authentic deep male voice via pitch shift!
+                    cmd = [
+                        self.ffmpeg_path,
+                        "-i", raw_fallback,
+                        "-af", "asetrate=44100*0.82,atempo=1.22",
+                        "-ar", "44100",
+                        "-ac", "1",
+                        "-c:a", "libmp3lame" if output_path.lower().endswith(".mp3") else "pcm_s16le",
+                        "-y", output_path
+                    ]
+                    subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
+                    if os.path.exists(raw_fallback):
+                        try:
+                            os.remove(raw_fallback)
+                        except Exception:
+                            pass
+                    return os.path.exists(output_path) and os.path.getsize(output_path) > 100
+                else:
+                    if os.path.exists(output_path):
+                        try:
+                            os.remove(output_path)
+                        except Exception:
+                            pass
+                    os.rename(raw_fallback, output_path)
+                    return True
         except Exception:
             pass
 
@@ -343,21 +372,16 @@ class DubbingEngine:
 
             final_part = os.path.join(parts_dir, f"final_part_{i:04d}.wav")
 
-            # If speech duration exceeds the time window, adjust tempo so it stays strictly realtime!
-            if actual_dur > max_window:
-                target_speech_dur = max(0.3, max_window - 0.05)
-                speedup = actual_dur / target_speech_dur
-                if speedup > 2.0:
-                    filter_arg = f"atempo=2.0,atempo={min(2.0, speedup / 2.0):.3f}"
-                else:
-                    filter_arg = f"atempo={min(1.85, speedup):.3f}"
+            # Fit speech into time slot without cutting off any words!
+            # Never use -t hard-cutoff so full words and sentences are 100% complete!
+            if actual_dur > max_window + 0.1:
+                speedup = min(1.45, max(1.0, actual_dur / max_window))
                 cmd = [
                     self.ffmpeg_path,
                     "-i", raw_part,
-                    "-af", filter_arg,
+                    "-af", f"atempo={speedup:.3f}",
                     "-ar", "44100",
                     "-ac", "1",
-                    "-t", f"{max_window:.3f}",
                     "-c:a", "pcm_s16le",
                     "-y", final_part
                 ]
@@ -367,7 +391,6 @@ class DubbingEngine:
                     "-i", raw_part,
                     "-ar", "44100",
                     "-ac", "1",
-                    "-t", f"{max_window:.3f}",
                     "-c:a", "pcm_s16le",
                     "-y", final_part
                 ]
@@ -376,7 +399,7 @@ class DubbingEngine:
             if os.path.exists(final_part) and os.path.getsize(final_part) > 0:
                 measured_dur = self.probe_duration(final_part)
                 manifest_lines.append(f"file '{os.path.basename(final_part)}'")
-                current_time += measured_dur if measured_dur > 0 else min(actual_dur, max_window)
+                current_time += measured_dur if measured_dur > 0 else actual_dur
 
         # 4. Trailing silence up to total video duration
         if total_video_duration > current_time + 0.05:
