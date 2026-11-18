@@ -2,3 +2,4 @@
 # Official verified libraries (Pure Python & Windows 11 Smart App Control Safe)
 
 SpeechRecognition>=3.10.0
+imageio-ffmpeg>=0.4.9

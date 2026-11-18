@@ -3,7 +3,9 @@ Core Video Engine: Handles FFmpeg streaming, frame extraction, audio extraction,
 """
 
 import os
+import re
 import json
+import shutil
 import subprocess
 
 
@@ -12,7 +14,6 @@ class VideoEngine:
 
     def __init__(self, base_dir=None):
         if base_dir is None:
-            # d:\DUC\SPD
             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self.base_dir = base_dir
 
@@ -32,8 +33,29 @@ class VideoEngine:
         if os.path.exists(root_bin):
             return root_bin
 
-        # 3. Fallback to system command
+        # 3. Check system PATH
+        which_path = shutil.which(cmd_name) or shutil.which(filename)
+        if which_path:
+            return which_path
+
+        # 4. Fallback to imageio_ffmpeg if looking for ffmpeg
+        if "ffmpeg" in cmd_name.lower():
+            try:
+                import imageio_ffmpeg
+                exe = imageio_ffmpeg.get_ffmpeg_exe()
+                if exe and os.path.exists(exe):
+                    return exe
+            except Exception:
+                pass
+
         return cmd_name
+
+    def _has_binary(self, path):
+        if not path:
+            return False
+        if os.path.isabs(path) or os.sep in path or "/" in path:
+            return os.path.exists(path)
+        return shutil.which(path) is not None
 
     def format_time_hms(self, seconds):
         s = int(seconds)
@@ -44,7 +66,8 @@ class VideoEngine:
 
     def probe_video_metadata(self, filepath):
         """
-        Probe duration, width, height, and audio stream existence in one fast ffprobe call.
+        Probe duration, width, height, and audio stream existence.
+        Uses ffprobe if available, and seamlessly falls back to ffmpeg -i parsing.
         Returns dict: {'duration': float, 'width': int, 'height': int, 'has_audio': bool}
         """
         result = {
@@ -56,7 +79,8 @@ class VideoEngine:
         if not os.path.exists(filepath):
             return result
 
-        if os.path.exists(self.ffprobe_path):
+        # 1. Try ffprobe if available
+        if self._has_binary(self.ffprobe_path):
             try:
                 cmd = [
                     self.ffprobe_path,
@@ -91,6 +115,32 @@ class VideoEngine:
             except Exception:
                 pass
 
+        # 2. Fallback to parsing ffmpeg -i output if ffprobe is missing or incomplete
+        if (result["duration"] <= 0 or result["width"] == 640) and self._has_binary(self.ffmpeg_path):
+            try:
+                cmd = [self.ffmpeg_path, "-i", filepath]
+                res = subprocess.run(cmd, capture_output=True, text=True, creationflags=0x08000000)
+                out = res.stderr or ""
+
+                # Parse Duration: HH:MM:SS.ms
+                dur_match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", out)
+                if dur_match:
+                    h, m, s = dur_match.groups()
+                    result["duration"] = int(h) * 3600 + int(m) * 60 + float(s)
+
+                # Parse Video resolution: e.g. 1280x720
+                vid_match = re.search(r"Video:.*?,.*?(\d{2,5})x(\d{2,5})", out)
+                if vid_match:
+                    result["width"] = int(vid_match.group(1))
+                    result["height"] = int(vid_match.group(2))
+
+                # Check for audio stream
+                if re.search(r"Stream.*Audio:", out):
+                    result["has_audio"] = True
+            except Exception:
+                pass
+
+        # 3. Last-resort fallback based on file size if both tools fail
         if result["duration"] <= 0:
             size_mb = os.path.getsize(filepath) / (1024 * 1024)
             result["duration"] = max(60.0, min(600.0, size_mb * 15.0))
@@ -98,7 +148,7 @@ class VideoEngine:
         return result
 
     def probe_duration(self, filepath):
-        """Extract exact duration in seconds using ffprobe."""
+        """Extract exact duration in seconds."""
         meta = self.probe_video_metadata(filepath)
         return meta["duration"]
 
@@ -107,7 +157,7 @@ class VideoEngine:
         Fast single-frame extraction directly into memory as PPM bytes (P6 format).
         Zero disk I/O, instantaneous rendering in Tkinter PhotoImage.
         """
-        if not os.path.exists(filepath) or not os.path.exists(self.ffmpeg_path):
+        if not os.path.exists(filepath) or not self._has_binary(self.ffmpeg_path):
             return None
 
         # Ensure even dimensions for FFmpeg
@@ -145,7 +195,7 @@ class VideoEngine:
         Start continuous FFmpeg streaming process piping raw RGB24 frames to stdout.
         Yields ultra-smooth 25 FPS video playback with zero process startup overhead.
         """
-        if not os.path.exists(filepath) or not os.path.exists(self.ffmpeg_path):
+        if not os.path.exists(filepath) or not self._has_binary(self.ffmpeg_path):
             return None
 
         target_w = target_w - (target_w % 2)
@@ -188,7 +238,7 @@ class VideoEngine:
 
     def extract_audio(self, filepath, output_wav=None):
         """Extract audio track as standard 16kHz mono WAV for dubbing."""
-        if not os.path.exists(filepath) or not os.path.exists(self.ffmpeg_path):
+        if not os.path.exists(filepath) or not self._has_binary(self.ffmpeg_path):
             return None
 
         if output_wav is None:

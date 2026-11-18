@@ -23,4 +23,11 @@ if not exist ".venv\Scripts\python.exe" (
     echo [INFO] Setup complete!
 )
 
+if not exist "bin\ffmpeg.exe" (
+    for /r ".venv\Lib\site-packages\imageio_ffmpeg\binaries" %%f in (ffmpeg*.exe) do (
+        if not exist "bin" mkdir bin
+        copy "%%f" "bin\ffmpeg.exe" >nul 2>&1
+    )
+)
+
 ".venv\Scripts\python.exe" main.py %*
