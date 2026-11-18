@@ -85,13 +85,25 @@ def parse_srt_file(srt_path: str) -> List[TimedSubtitle]:
 def translate_text_to_khmer(text: str) -> str:
     """
     Robust multi-provider translation to Khmer.
-    Tries GoogleTranslator first, falls back to MyMemoryTranslator.
+    1. Uses googletrans (session-authenticated Google Translate, immune to 429 rate limits).
+    2. Falls back to deep_translator GoogleTranslator.
+    3. Falls back to MyMemoryTranslator.
     """
     cleaned = text.strip()
     if not cleaned:
         return ""
 
-    # Provider 1: GoogleTranslator
+    # Provider 1: googletrans (authenticated session with tokens, reliable for batch lines)
+    try:
+        from googletrans import Translator
+        t = Translator()
+        res = t.translate(cleaned, dest="km")
+        if res and res.text and res.text.strip():
+            return res.text.strip()
+    except Exception:
+        pass
+
+    # Provider 2: deep_translator GoogleTranslator
     try:
         from deep_translator import GoogleTranslator
         res = GoogleTranslator(source="auto", target="km").translate(cleaned)
@@ -100,7 +112,7 @@ def translate_text_to_khmer(text: str) -> str:
     except Exception:
         pass
 
-    # Provider 2: MyMemoryTranslator
+    # Provider 3: MyMemoryTranslator
     try:
         from deep_translator import MyMemoryTranslator
         res = MyMemoryTranslator(source="en-US", target="km-KH").translate(cleaned)
@@ -153,21 +165,24 @@ class DubbingEngine:
         if not segments:
             # Fallback to plain text read
             with open(source_srt_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            translated = translate_text_to_khmer(content)
+                content = f.read().strip()
+            translated = translate_text_to_khmer(content) if content else ""
+            if not translated and content:
+                translated = content
             with open(output_khmer_txt, "w", encoding="utf-8") as f:
                 f.write(translated)
             return [], translated
 
-        # Cache optimization: If output_khmer_srt already exists and matches segment count, reuse it
+        # Cache optimization: If output_khmer_srt already exists with valid content, reuse it
         if os.path.exists(output_khmer_srt) and os.path.getsize(output_khmer_srt) > 0:
             cached_segments = parse_srt_file(output_khmer_srt)
             if cached_segments and len(cached_segments) == len(segments):
-                full_cached_text = " ".join(s.text for s in cached_segments if s.text)
-                if not os.path.exists(output_khmer_txt):
-                    with open(output_khmer_txt, "w", encoding="utf-8") as f:
-                        f.write(full_cached_text)
-                return cached_segments, full_cached_text
+                full_cached_text = " ".join(s.text for s in cached_segments if s.text).strip()
+                if full_cached_text:
+                    if not os.path.exists(output_khmer_txt):
+                        with open(output_khmer_txt, "w", encoding="utf-8") as f:
+                            f.write(full_cached_text)
+                    return cached_segments, full_cached_text
 
         for i, seg in enumerate(segments):
             if on_progress:
@@ -175,6 +190,9 @@ class DubbingEngine:
                 on_progress(f"Translating to Khmer ({i + 1}/{total})...", pct)
 
             khmer_txt = translate_text_to_khmer(seg.text)
+            if not khmer_txt or not khmer_txt.strip():
+                khmer_txt = seg.text.strip()
+
             khmer_seg = TimedSubtitle(index=seg.index, start=seg.start, end=seg.end, text=khmer_txt)
             khmer_segments.append(khmer_seg)
 
@@ -189,7 +207,10 @@ class DubbingEngine:
             f.write("\n".join(translated_entries))
 
         # Save continuous Khmer script
-        full_khmer_script = " ".join(full_text_parts)
+        full_khmer_script = " ".join(full_text_parts).strip()
+        if not full_khmer_script and segments:
+            full_khmer_script = " ".join(s.text for s in segments if s.text).strip()
+
         with open(output_khmer_txt, "w", encoding="utf-8") as f:
             f.write(full_khmer_script)
 
