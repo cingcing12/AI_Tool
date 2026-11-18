@@ -18,7 +18,7 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 from src.ui import RoundedCard, RoundedButton, RoundedProgressBar, YouTubePlayerView
-from src.core import VideoEngine, ScriptExtractor
+from src.core import VideoEngine, ScriptExtractor, DubbingEngine
 
 
 class VideoTranslateApp(tk.Tk):
@@ -38,6 +38,7 @@ class VideoTranslateApp(tk.Tk):
         # Core Engines
         self.engine = VideoEngine(base_dir=APP_DIR)
         self.script_extractor = ScriptExtractor(model_size="base")
+        self.dubbing_engine = DubbingEngine(ffmpeg_path=self.engine.ffmpeg_path, temp_dir=self.engine.temp_dir)
 
         # Variables
         self.video_path_var = tk.StringVar(value="")
@@ -420,35 +421,75 @@ class VideoTranslateApp(tk.Tk):
         thread.start()
 
     def _dubbing_worker(self, filepath, voice, output_path):
-        """Worker thread executing audio extraction and dubbing pipeline."""
-        steps = [
-            (20, "Extracting audio..."),
-            (50, f"Generating {voice} voice..."),
-            (80, "Merging video..."),
-            (100, "Complete!")
-        ]
+        """Worker thread executing end-to-end Khmer dubbing pipeline."""
+        base_name = os.path.splitext(os.path.basename(filepath))[0]
+        source_srt_path = os.path.join(self.output_folder, f"{base_name}_subtitles.srt")
+        khmer_srt_path = os.path.join(self.output_folder, f"{base_name}_khmer.srt")
+        khmer_txt_path = os.path.join(self.output_folder, f"{base_name}_khmer.txt")
+        khmer_audio_path = os.path.join(self.output_folder, f"{base_name}_khmer_{voice.lower()}.mp3")
 
-        # Extract audio using real VideoEngine
-        self.engine.extract_audio(filepath)
+        def on_progress(msg, pct):
+            self.update_progress_safe(msg, pct)
 
         try:
-            for target_percent, step_status in steps:
-                current = int(self.progress_bar.get_progress())
-                while current < target_percent:
-                    time.sleep(0.03)
-                    current += 1
-                    self.update_progress_safe(step_status, current)
+            # Step 1: Ensure source script is extracted
+            if not os.path.exists(source_srt_path) or os.path.getsize(source_srt_path) == 0:
+                self.update_progress_safe("Step 1/4: Extracting spoken script from video...", 10)
+                self.script_extractor.extract_script_to_srt(
+                    video_path=filepath,
+                    output_srt_path=source_srt_path,
+                    on_progress=lambda m, p: self.update_progress_safe(f"Step 1/4: {m}", min(25, int(p * 0.25)))
+                )
 
-                time.sleep(0.3)
+            # Step 2: Translate script to Khmer
+            self.update_progress_safe("Step 2/4: Translating script to Khmer...", 30)
+            full_khmer_script = self.dubbing_engine.translate_script(
+                source_srt_path=source_srt_path,
+                output_khmer_srt=khmer_srt_path,
+                output_khmer_txt=khmer_txt_path,
+                on_progress=on_progress
+            )
 
-            # Prompt success with output location
+            if not full_khmer_script or not full_khmer_script.strip():
+                raise RuntimeError("Translation to Khmer produced no text.")
+
+            # Step 3: Synthesize authentic Khmer voiceover (Edge TTS Neural / gTTS)
+            self.update_progress_safe(f"Step 3/4: Generating Khmer {voice} voiceover...", 55)
+            generated_audio = self.dubbing_engine.generate_voice(
+                khmer_text=full_khmer_script,
+                voice_type=voice,
+                output_audio_path=khmer_audio_path,
+                on_progress=on_progress
+            )
+
+            # Step 4: Merge voice with video, preserving background audio
+            self.update_progress_safe("Step 4/4: Merging Khmer voice into video...", 80)
+            has_audio = getattr(self.player_view, "has_audio", True)
+            self.dubbing_engine.merge_video(
+                video_path=filepath,
+                audio_path=generated_audio,
+                output_video_path=output_path,
+                background_volume=0.20,
+                has_audio=has_audio,
+                on_progress=on_progress
+            )
+
+            self.update_progress_safe("Dubbing Complete! 🎉", 100)
+
+            # Prompt success with details
             self.run_on_ui_thread(lambda: messagebox.showinfo(
-                "Success! 🎉",
-                f"Video dubbed successfully with {voice} voice!\n\n"
-                f"Saved to:\n{output_path}"
+                "Dubbing Complete! 🎉",
+                f"Video successfully dubbed in Khmer ({voice} voice)!\n\n"
+                f"🎬 Output Video:\n{output_path}\n\n"
+                f"🔊 Khmer Audio:\n{khmer_audio_path}\n\n"
+                f"📝 Khmer Subtitles:\n{khmer_srt_path}"
             ))
         except Exception as e:
             self.update_progress_safe(f"Error: {e}", 0)
+            self.run_on_ui_thread(lambda err=e: messagebox.showerror(
+                "Dubbing Error",
+                f"Failed to generate Khmer dubbed video:\n{err}"
+            ))
         finally:
             self.is_processing = False
             self.set_controls_state_safe(tk.NORMAL)
