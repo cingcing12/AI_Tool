@@ -1,0 +1,4 @@
+# Production Dependencies for Video Translate & AI Tool
+# Official verified libraries (Pure Python & Windows 11 Smart App Control Safe)
+
+SpeechRecognition>=3.10.0
