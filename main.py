@@ -450,9 +450,9 @@ class VideoTranslateApp(tk.Tk):
                 on_progress=on_progress
             )
 
-            # If existing SRT on disk was empty or stale, re-extract fresh with silence-aligned intervals
+            # If existing SRT on disk was empty or stale, re-extract fresh script
             if not full_khmer_script or not full_khmer_script.strip():
-                self.update_progress_safe("Re-extracting fresh script with silence alignment...", 15)
+                self.update_progress_safe("Re-extracting fresh subtitles...", 15)
                 self.script_extractor.extract_script_to_srt(
                     video_path=filepath,
                     output_srt_path=source_srt_path,

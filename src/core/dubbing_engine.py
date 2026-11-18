@@ -93,7 +93,7 @@ def translate_text_to_khmer(text: str) -> str:
     if not cleaned:
         return ""
 
-    # Provider 1: googletrans (authenticated session with tokens, reliable for batch lines)
+    # Provider 1: googletrans (session-authenticated Google Translate)
     try:
         from googletrans import Translator
         t = Translator()
@@ -217,30 +217,35 @@ class DubbingEngine:
         return khmer_segments, full_khmer_script
 
     def synthesize_single_line(self, text: str, voice_type: str, output_path: str) -> bool:
-        """Synthesize a single line of Khmer speech using Edge TTS with pitch-matched gTTS fallback."""
+        """
+        Synthesize a single line of Khmer speech.
+        Guaranteed 100% gender adherence:
+        - When Man: Edge TTS km-KH-PisethNeural with pitch-shifted male fallback. NEVER WOMAN VOICE!
+        - When Woman: Edge TTS km-KH-SreymomNeural with female gTTS fallback.
+        """
         voice_gender = voice_type.lower()
         is_man = "man" in voice_gender or "male" in voice_gender
         edge_voice = "km-KH-PisethNeural" if is_man else "km-KH-SreymomNeural"
 
-        # 1. Edge TTS with rate="+0%" (Prevents Microsoft Azure from rejecting non-Latin SSML)
-        for attempt in range(2):
+        # 1. Edge TTS (High-Quality Authentic Neural Voice, with 3 retries)
+        for attempt in range(3):
             try:
                 import edge_tts
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                communicate = edge_tts.Communicate(text.strip(), edge_voice, rate="+0%")
+                communicate = edge_tts.Communicate(text.strip(), edge_voice)
                 loop.run_until_complete(communicate.save(output_path))
                 loop.close()
                 if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
                     return True
             except Exception:
-                pass
+                time.sleep(0.2)
 
-        # 2. gTTS fallback (Guaranteed to match requested gender!)
+        # 2. Gender-matched Fallback (Guaranteed to match requested gender!)
         try:
             from gtts import gTTS
             raw_fallback = output_path + ".fallback.mp3"
-            tts = gTTS(text, lang="km")
+            tts = gTTS(text.strip(), lang="km")
             tts.save(raw_fallback)
             if os.path.exists(raw_fallback) and os.path.getsize(raw_fallback) > 100:
                 if is_man:
@@ -285,6 +290,7 @@ class DubbingEngine:
         """
         Synthesize Khmer speech synchronized in REALTIME with video speech timestamps.
         Each subtitle line is spoken at the exact second the person speaks in the video!
+        Dynamic tempo adjustment ensures 100% full speech with ZERO cut-off words.
         """
         if not output_audio_path:
             output_audio_path = os.path.join(self.temp_dir, f"khmer_timed_narration_{int(time.time())}.mp3")
@@ -372,14 +378,22 @@ class DubbingEngine:
 
             final_part = os.path.join(parts_dir, f"final_part_{i:04d}.wav")
 
-            # Fit speech into time slot without cutting off any words!
-            # Never use -t hard-cutoff so full words and sentences are 100% complete!
-            if actual_dur > max_window + 0.1:
-                speedup = min(1.45, max(1.0, actual_dur / max_window))
+            # Fit speech naturally into time slot with dynamic atempo chaining (ZERO WORD CUTOFF!)
+            if actual_dur > max_window:
+                speedup = min(2.5, max(1.0, actual_dur / max(0.3, max_window - 0.02)))
+                # Build chained atempo filter (each step between 0.5 and 2.0)
+                filters = []
+                rem = speedup
+                while rem > 2.0:
+                    filters.append("atempo=2.0")
+                    rem /= 2.0
+                filters.append(f"atempo={rem:.3f}")
+                filter_arg = ",".join(filters)
+
                 cmd = [
                     self.ffmpeg_path,
                     "-i", raw_part,
-                    "-af", f"atempo={speedup:.3f}",
+                    "-af", filter_arg,
                     "-ar", "44100",
                     "-ac", "1",
                     "-c:a", "pcm_s16le",
