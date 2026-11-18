@@ -159,6 +159,16 @@ class DubbingEngine:
                 f.write(translated)
             return [], translated
 
+        # Cache optimization: If output_khmer_srt already exists and matches segment count, reuse it
+        if os.path.exists(output_khmer_srt) and os.path.getsize(output_khmer_srt) > 0:
+            cached_segments = parse_srt_file(output_khmer_srt)
+            if cached_segments and len(cached_segments) == len(segments):
+                full_cached_text = " ".join(s.text for s in cached_segments if s.text)
+                if not os.path.exists(output_khmer_txt):
+                    with open(output_khmer_txt, "w", encoding="utf-8") as f:
+                        f.write(full_cached_text)
+                return cached_segments, full_cached_text
+
         for i, seg in enumerate(segments):
             if on_progress:
                 pct = min(40, 20 + int(((i + 1) / total) * 20))
@@ -190,11 +200,14 @@ class DubbingEngine:
         voice_gender = voice_type.lower()
         edge_voice = "km-KH-PisethNeural" if "man" in voice_gender or "male" in voice_gender else "km-KH-SreymomNeural"
 
-        # 1. Edge TTS
+        # 1. Edge TTS (High-Quality Authentic Neural Voices)
         try:
             import edge_tts
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             communicate = edge_tts.Communicate(text, edge_voice)
-            asyncio.run(communicate.save(output_path))
+            loop.run_until_complete(communicate.save(output_path))
+            loop.close()
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 return True
         except Exception:
@@ -224,9 +237,9 @@ class DubbingEngine:
         Each subtitle line is spoken at the exact second the person speaks in the video!
         """
         if not output_audio_path:
-            output_audio_path = os.path.join(self.temp_dir, f"khmer_timed_narration_{int(time.time())}.wav")
+            output_audio_path = os.path.join(self.temp_dir, f"khmer_timed_narration_{int(time.time())}.mp3")
 
-        session_id = int(time.time())
+        session_id = int(time.time() * 1000)
         parts_dir = os.path.join(self.temp_dir, f"tts_session_{session_id}")
         os.makedirs(parts_dir, exist_ok=True)
 
@@ -236,17 +249,44 @@ class DubbingEngine:
         current_time = 0.0
         total_segments = len(khmer_segments)
 
+        # Ensure correct audio codec based on target file extension (MP3 -> libmp3lame, M4A/AAC -> aac, WAV -> pcm)
+        ext = os.path.splitext(output_audio_path)[1].lower()
+        if ext == ".mp3":
+            codec_args = ["-c:a", "libmp3lame", "-b:a", "192k"]
+        elif ext in (".m4a", ".aac"):
+            codec_args = ["-c:a", "aac", "-b:a", "192k"]
+        elif ext == ".wav":
+            codec_args = ["-c:a", "pcm_s16le"]
+        else:
+            codec_args = ["-c:a", "libmp3lame", "-b:a", "192k"]
+
+        if not khmer_segments:
+            # Empty segments fallback: generate silent track matching total duration
+            dur = max(1.0, total_video_duration)
+            cmd_silent = [
+                self.ffmpeg_path,
+                "-f", "lavfi",
+                "-i", "anullsrc=r=44100:cl=mono",
+                "-t", f"{dur:.3f}",
+                *codec_args,
+                "-y", output_audio_path
+            ]
+            subprocess.run(cmd_silent, capture_output=True, creationflags=0x08000000)
+            return output_audio_path
+
         for i, seg in enumerate(khmer_segments):
             if on_progress:
-                pct = min(75, 45 + int(((i + 1) / max(1, total_segments)) * 30))
-                on_progress(f"Synthesizing realtime voice ({i + 1}/{total_segments})...", pct)
+                pct = min(80, 45 + int(((i + 1) / max(1, total_segments)) * 35))
+                on_progress(f"Synthesizing realtime Khmer voice ({i + 1}/{total_segments})...", pct)
 
-            if not seg.text.strip():
+            if not seg.text or not seg.text.strip():
                 continue
 
-            # 1. Add silence gap if there is a pause before this segment
-            gap = seg.start - current_time
-            if gap > 0.04:
+            target_start = max(0.0, seg.start)
+
+            # 1. Add silence gap if there is a pause before this segment starts
+            gap = target_start - current_time
+            if gap >= 0.02:
                 silence_file = os.path.join(parts_dir, f"silence_{i:04d}.wav")
                 cmd = [
                     self.ffmpeg_path,
@@ -257,7 +297,7 @@ class DubbingEngine:
                     "-y", silence_file
                 ]
                 subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
-                if os.path.exists(silence_file):
+                if os.path.exists(silence_file) and os.path.getsize(silence_file) > 0:
                     rel_name = os.path.basename(silence_file)
                     manifest_lines.append(f"file '{rel_name}'")
                     current_time += gap
@@ -265,7 +305,7 @@ class DubbingEngine:
             # 2. Synthesize Khmer speech for this segment
             raw_part = os.path.join(parts_dir, f"raw_part_{i:04d}.mp3")
             success = self.synthesize_single_line(seg.text, voice_type, raw_part)
-            if not success or not os.path.exists(raw_part):
+            if not success or not os.path.exists(raw_part) or os.path.getsize(raw_part) == 0:
                 continue
 
             # Probe synthesized speech duration
@@ -275,44 +315,50 @@ class DubbingEngine:
 
             # 3. Determine available time window until next subtitle starts
             if i + 1 < total_segments:
-                max_window = max(0.4, khmer_segments[i + 1].start - seg.start)
+                next_start = khmer_segments[i + 1].start
+                max_window = max(0.4, next_start - current_time)
             else:
-                max_window = max(0.4, seg.end - seg.start)
+                max_window = max(0.4, max(seg.end, total_video_duration) - current_time)
 
             final_part = os.path.join(parts_dir, f"final_part_{i:04d}.wav")
 
-            # If speech is slightly longer than the time window, gently adjust tempo
-            if actual_dur > max_window + 0.15:
-                speedup = min(1.35, max(0.9, actual_dur / max_window))
+            # If speech duration exceeds the time window, adjust tempo so it stays strictly realtime!
+            if actual_dur > max_window:
+                target_speech_dur = max(0.3, max_window - 0.05)
+                speedup = actual_dur / target_speech_dur
+                if speedup > 2.0:
+                    filter_arg = f"atempo=2.0,atempo={min(2.0, speedup / 2.0):.3f}"
+                else:
+                    filter_arg = f"atempo={min(1.85, speedup):.3f}"
                 cmd = [
                     self.ffmpeg_path,
                     "-i", raw_part,
-                    "-af", f"atempo={speedup:.2f}",
+                    "-af", filter_arg,
                     "-ar", "44100",
                     "-ac", "1",
+                    "-t", f"{max_window:.3f}",
                     "-c:a", "pcm_s16le",
                     "-y", final_part
                 ]
-                subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
-                actual_dur = actual_dur / speedup
             else:
                 cmd = [
                     self.ffmpeg_path,
                     "-i", raw_part,
                     "-ar", "44100",
                     "-ac", "1",
+                    "-t", f"{max_window:.3f}",
                     "-c:a", "pcm_s16le",
                     "-y", final_part
                 ]
-                subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
+            subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
 
-            if os.path.exists(final_part):
-                rel_name = os.path.basename(final_part)
-                manifest_lines.append(f"file '{rel_name}'")
-                current_time += actual_dur
+            if os.path.exists(final_part) and os.path.getsize(final_part) > 0:
+                measured_dur = self.probe_duration(final_part)
+                manifest_lines.append(f"file '{os.path.basename(final_part)}'")
+                current_time += measured_dur if measured_dur > 0 else min(actual_dur, max_window)
 
         # 4. Trailing silence up to total video duration
-        if total_video_duration > current_time + 0.1:
+        if total_video_duration > current_time + 0.05:
             trailing_gap = total_video_duration - current_time
             trailing_file = os.path.join(parts_dir, "trailing_silence.wav")
             cmd = [
@@ -324,23 +370,38 @@ class DubbingEngine:
                 "-y", trailing_file
             ]
             subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
-            if os.path.exists(trailing_file):
+            if os.path.exists(trailing_file) and os.path.getsize(trailing_file) > 0:
                 manifest_lines.append(f"file '{os.path.basename(trailing_file)}'")
+                current_time += trailing_gap
 
         # 5. Concatenate all timed segments into the master narration audio
-        with open(concat_list_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(manifest_lines) + "\n")
+        if not manifest_lines:
+            dur = max(1.0, total_video_duration)
+            cmd_silent = [
+                self.ffmpeg_path,
+                "-f", "lavfi",
+                "-i", "anullsrc=r=44100:cl=mono",
+                "-t", f"{dur:.3f}",
+                *codec_args,
+                "-y", output_audio_path
+            ]
+            subprocess.run(cmd_silent, capture_output=True, creationflags=0x08000000)
+        else:
+            with open(concat_list_file, "w", encoding="utf-8") as f:
+                f.write("\n".join(manifest_lines) + "\n")
 
-        cmd = [
-            self.ffmpeg_path,
-            "-f", "concat",
-            "-safe", "0",
-            "-i", concat_list_file,
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-y", output_audio_path
-        ]
-        subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
+            cmd = [
+                self.ffmpeg_path,
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_list_file,
+                *codec_args,
+                "-y", output_audio_path
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, creationflags=0x08000000)
+            if not os.path.exists(output_audio_path) or os.path.getsize(output_audio_path) == 0:
+                err = res.stderr or "FFmpeg audio concat failed"
+                raise RuntimeError(f"Failed to generate timed voiceover: {err}")
 
         # Cleanup parts directory
         try:
@@ -368,6 +429,11 @@ class DubbingEngine:
         """
         if on_progress:
             on_progress("Merging pure Khmer voiceover into video (original audio removed)...", 85)
+
+        if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
+            raise FileNotFoundError(f"Source video file not found or empty: {video_path}")
+        if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+            raise FileNotFoundError(f"Dubbed audio file not found or empty: {audio_path}")
 
         os.makedirs(os.path.dirname(os.path.abspath(output_video_path)), exist_ok=True)
 

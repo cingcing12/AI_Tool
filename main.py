@@ -480,14 +480,23 @@ class VideoTranslateApp(tk.Tk):
 
             self.update_progress_safe("Dubbing Complete! 🎉", 100)
 
-            # Prompt success with details
-            self.run_on_ui_thread(lambda: messagebox.showinfo(
-                "Dubbing Complete! 🎉",
-                f"Video successfully dubbed in Khmer ({voice} voice)!\n\n"
-                f"🎬 Output Video:\n{output_path}\n\n"
-                f"🔊 Khmer Audio:\n{khmer_audio_path}\n\n"
-                f"📝 Khmer Subtitles:\n{khmer_srt_path}"
-            ))
+            # Prompt success with details and auto-load dubbed video for instant preview
+            def _on_success():
+                try:
+                    self.player_view.load_video(output_path)
+                    self.video_path_var.set(output_path)
+                except Exception:
+                    pass
+                messagebox.showinfo(
+                    "Dubbing Complete! 🎉",
+                    f"Video successfully dubbed in Khmer ({voice} voice)!\n\n"
+                    f"🎬 Output Video:\n{output_path}\n\n"
+                    f"🔊 Khmer Audio:\n{khmer_audio_path}\n\n"
+                    f"📝 Khmer Subtitles:\n{khmer_srt_path}\n\n"
+                    f"The dubbed video is loaded in the player. Click Play to watch!"
+                )
+
+            self.run_on_ui_thread(_on_success)
         except Exception as e:
             self.update_progress_safe(f"Error: {e}", 0)
             self.run_on_ui_thread(lambda err=e: messagebox.showerror(
