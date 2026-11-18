@@ -159,15 +159,16 @@ class DubbingEngine:
                 f.write(translated)
             return [], translated
 
-        # Cache optimization: If output_khmer_srt already exists and matches segment count, reuse it
+        # Cache optimization: If output_khmer_srt already exists and is newer than source_srt, reuse it
         if os.path.exists(output_khmer_srt) and os.path.getsize(output_khmer_srt) > 0:
-            cached_segments = parse_srt_file(output_khmer_srt)
-            if cached_segments and len(cached_segments) == len(segments):
-                full_cached_text = " ".join(s.text for s in cached_segments if s.text)
-                if not os.path.exists(output_khmer_txt):
-                    with open(output_khmer_txt, "w", encoding="utf-8") as f:
-                        f.write(full_cached_text)
-                return cached_segments, full_cached_text
+            if os.path.getmtime(output_khmer_srt) >= os.path.getmtime(source_srt_path):
+                cached_segments = parse_srt_file(output_khmer_srt)
+                if cached_segments and len(cached_segments) == len(segments):
+                    full_cached_text = " ".join(s.text for s in cached_segments if s.text)
+                    if not os.path.exists(output_khmer_txt):
+                        with open(output_khmer_txt, "w", encoding="utf-8") as f:
+                            f.write(full_cached_text)
+                    return cached_segments, full_cached_text
 
         for i, seg in enumerate(segments):
             if on_progress:
@@ -181,8 +182,9 @@ class DubbingEngine:
             start_str = seconds_to_srt_timestamp(seg.start)
             end_str = seconds_to_srt_timestamp(seg.end)
             translated_entries.append(f"{seg.index}\n{start_str} --> {end_str}\n{khmer_txt}\n")
-            if khmer_txt:
-                full_text_parts.append(khmer_txt)
+            # Filter out any duplicate consecutive lines
+            if full_text_parts and khmer_txt and khmer_txt.strip().lower() == full_text_parts[-1].strip().lower():
+                continue
 
         # Save translated SRT
         with open(output_khmer_srt, "w", encoding="utf-8") as f:
@@ -322,21 +324,16 @@ class DubbingEngine:
 
             final_part = os.path.join(parts_dir, f"final_part_{i:04d}.wav")
 
-            # If speech duration exceeds the time window, adjust tempo so it stays strictly realtime!
-            if actual_dur > max_window:
-                target_speech_dur = max(0.3, max_window - 0.05)
-                speedup = actual_dur / target_speech_dur
-                if speedup > 2.0:
-                    filter_arg = f"atempo=2.0,atempo={min(2.0, speedup / 2.0):.3f}"
-                else:
-                    filter_arg = f"atempo={min(1.85, speedup):.3f}"
+            # Intelligently adjust tempo when speech exceeds the time window without cutting off any words!
+            # Never hard-truncate with -t so full sentences and words remain 100% complete!
+            if actual_dur > max_window + 0.1:
+                speedup = min(1.35, max(1.0, actual_dur / max_window))
                 cmd = [
                     self.ffmpeg_path,
                     "-i", raw_part,
-                    "-af", filter_arg,
+                    "-af", f"atempo={speedup:.3f}",
                     "-ar", "44100",
                     "-ac", "1",
-                    "-t", f"{max_window:.3f}",
                     "-c:a", "pcm_s16le",
                     "-y", final_part
                 ]
@@ -346,7 +343,6 @@ class DubbingEngine:
                     "-i", raw_part,
                     "-ar", "44100",
                     "-ac", "1",
-                    "-t", f"{max_window:.3f}",
                     "-c:a", "pcm_s16le",
                     "-y", final_part
                 ]
@@ -355,7 +351,7 @@ class DubbingEngine:
             if os.path.exists(final_part) and os.path.getsize(final_part) > 0:
                 measured_dur = self.probe_duration(final_part)
                 manifest_lines.append(f"file '{os.path.basename(final_part)}'")
-                current_time += measured_dur if measured_dur > 0 else min(actual_dur, max_window)
+                current_time += measured_dur if measured_dur > 0 else actual_dur
 
         # 4. Trailing silence up to total video duration
         if total_video_duration > current_time + 0.05:
