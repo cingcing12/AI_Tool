@@ -33,6 +33,7 @@ class ScriptExtractor:
     """
     High-Performance Video Script & Subtitle (SRT) Extractor.
     Automatically selects the best installed speech engine (faster-whisper or SpeechRecognition).
+    Gracefully handles Windows Smart App Control (SAC) policy blocks.
     """
 
     def __init__(
@@ -47,17 +48,23 @@ class ScriptExtractor:
         self._whisper_model = None
 
     def get_available_engine(self) -> str:
-        """Check which speech-to-text engine is installed and ready."""
+        """
+        Check which speech-to-text engine is installed and ready.
+        Properly handles Windows Smart App Control / WDAC policy restrictions on C++ DLLs (WinError 4551).
+        """
+        # 1. Try faster-whisper (verify ctranslate2 DLL is not blocked by Windows SAC)
         try:
             import faster_whisper
+            from faster_whisper import WhisperModel
             return "faster-whisper"
-        except ImportError:
-            pass
+        except (ImportError, OSError, Exception) as exc:
+            print(f"[ScriptExtractor] faster-whisper unavailable ({exc}), checking SpeechRecognition...")
 
+        # 2. Try pure-Python SpeechRecognition (100% Windows Smart App Control safe)
         try:
             import speech_recognition
             return "speech_recognition"
-        except ImportError:
+        except (ImportError, OSError, Exception):
             pass
 
         return "none"
@@ -166,14 +173,28 @@ class ScriptExtractor:
         ve = VideoEngine()
         temp_wav = os.path.join(ve.temp_dir, f"transcribe_{int(time.time())}.wav")
         extracted_wav = ve.extract_audio(video_path, temp_wav)
-        audio_file = extracted_wav if (extracted_wav and os.path.exists(extracted_wav)) else video_path
+        audio_file = extracted_wav if (extracted_wav and os.path.exists(extracted_wav)) else None
+
+        if not audio_file:
+            raise RuntimeError(
+                "Failed to extract audio track from video.\n"
+                "Please verify that FFmpeg is available in bin/ or in your system PATH."
+            )
 
         srt_content = ""
         try:
             if engine == "faster-whisper":
-                srt_content = self._transcribe_faster_whisper(
-                    audio_file, language, on_progress
-                )
+                try:
+                    srt_content = self._transcribe_faster_whisper(
+                        audio_file, language, on_progress
+                    )
+                except (OSError, Exception) as whisper_err:
+                    print(f"[Whisper Warning]: {whisper_err}. Falling back to SpeechRecognition.")
+                    if on_progress:
+                        on_progress("Switching to standard speech recognition...", 20)
+                    srt_content = self._transcribe_speech_recognition(
+                        audio_file, video_path, ve, language, on_progress
+                    )
             else:
                 srt_content = self._transcribe_speech_recognition(
                     audio_file, video_path, ve, language, on_progress
@@ -192,7 +213,7 @@ class ScriptExtractor:
                 with open(output_srt_path, "w", encoding="utf-8") as f:
                     f.write(srt_content)
             except Exception:
-                # Fallback to saving in the same directory as the video if Downloads is not writeable
+                # Fallback to saving in the same directory as the video if target folder is not writeable
                 alt_dir = os.path.dirname(os.path.abspath(video_path))
                 alt_path = os.path.join(alt_dir, os.path.basename(output_srt_path))
                 try:
