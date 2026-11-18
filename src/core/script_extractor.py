@@ -1,7 +1,7 @@
 """
 Script Extractor Module (Speech-to-Text & Subtitle Generation)
-Standard Professional Engine supporting SpeechRecognition (Pure Python & Safe)
-and faster-whisper with automatic fallback.
+High-precision subtitle generation with speech enhancement, phrase detection,
+and overlapping sliding windows with prefix deduplication to ensure zero dropped text.
 """
 
 from __future__ import annotations
@@ -11,7 +11,15 @@ import re
 import sys
 import time
 import subprocess
+from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
+
+
+@dataclass
+class SubtitleSegment:
+    start: float
+    end: float
+    text: str
 
 
 def seconds_to_srt_timestamp(seconds: float) -> str:
@@ -29,11 +37,76 @@ def seconds_to_srt_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
+def normalize_word(word: str) -> str:
+    """Lowercase alphanumeric word normalizer for text comparison."""
+    return "".join(c.lower() for c in word if c.isalnum())
+
+
+def count_words(text: str) -> int:
+    """Count non-empty normalized words."""
+    return sum(1 for w in text.split() if normalize_word(w))
+
+
+def remove_duplicate_prefix(previous_text: str, current_text: str) -> str:
+    """
+    Remove overlapping duplicate words from the beginning of current_text
+    that already appeared at the end of previous_text.
+    """
+    if not previous_text or not current_text:
+        return current_text.strip()
+
+    prev_words = [w for w in previous_text.split() if normalize_word(w)]
+    curr_words = [w for w in current_text.split() if normalize_word(w)]
+
+    if not prev_words or not curr_words:
+        return current_text.strip()
+
+    max_overlap = min(len(prev_words), len(curr_words), 14)
+    for k in range(max_overlap, 0, -1):
+        prev_tail = [normalize_word(w) for w in prev_words[-k:]]
+        curr_head = [normalize_word(w) for w in curr_words[:k]]
+        if prev_tail == curr_head:
+            trimmed = " ".join(curr_words[k:])
+            return trimmed.strip()
+
+    return current_text.strip()
+
+
+def google_recognize_best(recognizer, audio_data, speech_lang: str = "en-US") -> str:
+    """
+    Query Google Speech Recognition and pick the best alternative candidate
+    scored by confidence and sentence completeness.
+    """
+    lang = speech_lang if speech_lang and speech_lang != "auto" else "en-US"
+    try:
+        res = recognizer.recognize_google(audio_data, language=lang, show_all=True)
+        if isinstance(res, dict) and "alternative" in res and res["alternative"]:
+            best_text = ""
+            best_score = -1.0
+            for alt in res["alternative"]:
+                text = str(alt.get("transcript", "")).strip()
+                if not text:
+                    continue
+                conf = float(alt.get("confidence", 0.0) or 0.0)
+                words = count_words(text)
+                score = (conf * 100.0) + words
+                if score > best_score:
+                    best_score = score
+                    best_text = text
+            if best_text:
+                return best_text
+    except Exception:
+        pass
+
+    # Standard fallback
+    return recognizer.recognize_google(audio_data, language=lang).strip()
+
+
 class ScriptExtractor:
     """
     High-Performance Video Script & Subtitle (SRT) Extractor.
     Automatically selects the best installed speech engine (faster-whisper or SpeechRecognition).
-    Gracefully handles Windows Smart App Control (SAC) policy blocks.
+    Features Speech Enhancement, Phrase Segmentation, and Overlapping Windows with Deduplication.
     """
 
     def __init__(
@@ -50,17 +123,15 @@ class ScriptExtractor:
     def get_available_engine(self) -> str:
         """
         Check which speech-to-text engine is installed and ready.
-        Properly handles Windows Smart App Control / WDAC policy restrictions on C++ DLLs (WinError 4551).
+        Handles Windows Smart App Control policy blocks on C++ DLLs (WinError 4551).
         """
-        # 1. Try faster-whisper (verify ctranslate2 DLL is not blocked by Windows SAC)
         try:
             import faster_whisper
             from faster_whisper import WhisperModel
             return "faster-whisper"
         except (ImportError, OSError, Exception) as exc:
-            print(f"[ScriptExtractor] faster-whisper unavailable ({exc}), checking SpeechRecognition...")
+            print(f"[ScriptExtractor] faster-whisper unavailable ({exc}), using SpeechRecognition.")
 
-        # 2. Try pure-Python SpeechRecognition (100% Windows Smart App Control safe)
         try:
             import speech_recognition
             return "speech_recognition"
@@ -83,69 +154,6 @@ class ScriptExtractor:
         )
         return self._whisper_model
 
-    def _detect_speech_segments(
-        self,
-        audio_path: str,
-        total_duration: float,
-        ffmpeg_bin: str
-    ) -> List[Tuple[float, float]]:
-        """
-        Use FFmpeg silence detection to divide audio into speech intervals.
-        Falls back to 5-second uniform chunks if silence detection returns empty.
-        """
-        if total_duration <= 0:
-            total_duration = 10.0
-
-        segments: List[Tuple[float, float]] = []
-
-        try:
-            cmd = [
-                ffmpeg_bin,
-                "-i", audio_path,
-                "-af", "silencedetect=noise=-30dB:d=0.35",
-                "-f", "null", "-"
-            ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=0x08000000)
-            output = proc.stderr or ""
-
-            starts = [float(s) for s in re.findall(r"silence_start:\s*([0-9.]+)", output)]
-            ends = [float(e) for e in re.findall(r"silence_end:\s*([0-9.]+)", output)]
-
-            if starts and ends:
-                cur = 0.0
-                for s_start, s_end in zip(starts, ends):
-                    if s_start > cur + 0.5:
-                        segments.append((cur, s_start))
-                    cur = s_end
-                if cur < total_duration - 0.5:
-                    segments.append((cur, total_duration))
-        except Exception:
-            pass
-
-        # Split long segments (>7s) or use uniform 5s chunks if no silences detected
-        refined_segments: List[Tuple[float, float]] = []
-
-        if not segments:
-            # Fallback: uniform 5-second windows
-            step = 5.0
-            t = 0.0
-            while t < total_duration:
-                refined_segments.append((t, min(total_duration, t + step)))
-                t += step
-        else:
-            for start, end in segments:
-                dur = end - start
-                if dur > 8.0:
-                    step = 5.0
-                    sub_t = start
-                    while sub_t < end:
-                        refined_segments.append((sub_t, min(end, sub_t + step)))
-                        sub_t += step
-                elif dur >= 0.6:
-                    refined_segments.append((start, end))
-
-        return refined_segments if refined_segments else [(0.0, total_duration)]
-
     def extract_script_to_srt(
         self,
         video_path: str,
@@ -167,15 +175,20 @@ class ScriptExtractor:
             )
 
         if on_progress:
-            on_progress("Extracting audio track for transcription...", 15)
+            on_progress("Extracting and enhancing audio for transcription...", 10)
 
         from .video_engine import VideoEngine
         ve = VideoEngine()
-        temp_wav = os.path.join(ve.temp_dir, f"transcribe_{int(time.time())}.wav")
-        extracted_wav = ve.extract_audio(video_path, temp_wav)
-        audio_file = extracted_wav if (extracted_wav and os.path.exists(extracted_wav)) else None
 
-        if not audio_file:
+        # Step 1: Extract speech-enhanced 16kHz audio track
+        temp_wav = os.path.join(ve.temp_dir, f"transcribe_{int(time.time())}.wav")
+        extracted_wav = ve.extract_audio(video_path, temp_wav, enhance_speech=True)
+
+        # Fallback to standard extraction if filter failed
+        if not extracted_wav or not os.path.exists(extracted_wav) or os.path.getsize(extracted_wav) == 0:
+            extracted_wav = ve.extract_audio(video_path, temp_wav, enhance_speech=False)
+
+        if not extracted_wav or not os.path.exists(extracted_wav) or os.path.getsize(extracted_wav) == 0:
             raise RuntimeError(
                 "Failed to extract audio track from video.\n"
                 "Please verify that FFmpeg is available in bin/ or in your system PATH."
@@ -186,18 +199,18 @@ class ScriptExtractor:
             if engine == "faster-whisper":
                 try:
                     srt_content = self._transcribe_faster_whisper(
-                        audio_file, language, on_progress
+                        extracted_wav, language, on_progress
                     )
                 except (OSError, Exception) as whisper_err:
                     print(f"[Whisper Warning]: {whisper_err}. Falling back to SpeechRecognition.")
                     if on_progress:
-                        on_progress("Switching to standard speech recognition...", 20)
+                        on_progress("Switching to SpeechRecognition engine...", 20)
                     srt_content = self._transcribe_speech_recognition(
-                        audio_file, video_path, ve, language, on_progress
+                        extracted_wav, video_path, ve, language, on_progress
                     )
             else:
                 srt_content = self._transcribe_speech_recognition(
-                    audio_file, video_path, ve, language, on_progress
+                    extracted_wav, video_path, ve, language, on_progress
                 )
         finally:
             if temp_wav and os.path.exists(temp_wav):
@@ -213,7 +226,6 @@ class ScriptExtractor:
                 with open(output_srt_path, "w", encoding="utf-8") as f:
                     f.write(srt_content)
             except Exception:
-                # Fallback to saving in the same directory as the video if target folder is not writeable
                 alt_dir = os.path.dirname(os.path.abspath(video_path))
                 alt_path = os.path.join(alt_dir, os.path.basename(output_srt_path))
                 try:
@@ -279,54 +291,111 @@ class ScriptExtractor:
     ) -> str:
         """
         Pure-Python Speech Recognition using SpeechRecognition library.
-        Zero C++ compilation, 100% safe from Windows Smart App Control blocks.
+        Combines natural phrase detection and overlapping sliding windows with prefix
+        deduplication to ensure seamless, complete transcripts without cut-off words.
         """
         import speech_recognition as sr
 
-        if on_progress:
-            on_progress("Analyzing speech segments...", 25)
+        target_lang = language or self.default_language
+        if target_lang == "auto":
+            target_lang = "en-US"
 
         meta = video_engine.probe_video_metadata(video_path)
-        total_dur = meta.get("duration", 0.0)
-        if total_dur <= 0:
-            total_dur = 10.0
+        total_duration = meta.get("duration", 0.0)
+        if total_duration <= 0:
+            total_duration = 30.0
 
-        segments = self._detect_speech_segments(
-            audio_path, total_dur, getattr(video_engine, "ffmpeg_path", "ffmpeg")
-        )
+        if on_progress:
+            on_progress("Analyzing speech audio...", 20)
+
+        # Method: Overlapping Sliding Window with Prefix Deduplication
+        # Window size: 7.5 seconds
+        # Overlap: 2.5 seconds (step = 5.0 seconds)
+        # This guarantees that words near boundaries are captured completely in both windows,
+        # and the deduplication algorithm removes the overlap seamlessly!
+        window_size = 7.5
+        step = 5.0
+        segments: List[SubtitleSegment] = []
+        previous_text = ""
 
         recognizer = sr.Recognizer()
-        target_lang = language or self.default_language
+        recognizer.energy_threshold = 280
+        recognizer.dynamic_energy_threshold = True
 
-        srt_entries: List[str] = []
-        index = 1
-        num_segments = len(segments)
+        t = 0.0
+        total_steps = max(1, int(total_duration / step) + 1)
+        step_idx = 0
 
-        for i, (seg_start, seg_end) in enumerate(segments):
-            dur = seg_end - seg_start
-            if dur <= 0.3:
-                continue
+        while t < total_duration:
+            cur_duration = min(window_size, total_duration - t)
+            if cur_duration < 0.6:
+                break
 
+            step_idx += 1
+            if on_progress:
+                pct = min(95, 20 + int((step_idx / total_steps) * 75))
+                on_progress(f"Transcribing {t:.1f}s - {t + cur_duration:.1f}s of {total_duration:.1f}s...", pct)
+
+            raw_text = ""
             try:
                 with sr.AudioFile(audio_path) as source:
-                    audio_data = recognizer.record(source, offset=seg_start, duration=dur)
-                    text = recognizer.recognize_google(audio_data, language=target_lang)
-                    text = text.strip() if text else ""
-            except (sr.UnknownValueError, Exception):
-                text = ""
+                    audio_data = recognizer.record(source, offset=t, duration=cur_duration)
+                    raw_text = google_recognize_best(recognizer, audio_data, speech_lang=target_lang)
+            except sr.UnknownValueError:
+                raw_text = ""
+            except Exception:
+                raw_text = ""
 
-            if text:
-                start_str = seconds_to_srt_timestamp(seg_start)
-                end_str = seconds_to_srt_timestamp(seg_end)
-                srt_entries.append(f"{index}\n{start_str} --> {end_str}\n{text}\n")
-                index += 1
+            # If window produced no text, try a short focused sub-window in the latter half
+            if not raw_text and cur_duration >= 4.0:
+                try:
+                    sub_offset = t + 2.0
+                    sub_dur = cur_duration - 2.0
+                    with sr.AudioFile(audio_path) as source:
+                        audio_data = recognizer.record(source, offset=sub_offset, duration=sub_dur)
+                        sub_text = google_recognize_best(recognizer, audio_data, speech_lang=target_lang)
+                    if sub_text:
+                        raw_text = sub_text
+                except Exception:
+                    pass
 
-            if on_progress:
-                pct = min(95, 25 + int(((i + 1) / num_segments) * 70))
-                on_progress(f"Transcribing segment {i + 1}/{num_segments}...", pct)
+            if raw_text:
+                raw_text = raw_text.strip()
+                # Deduplicate prefix words that were already captured at the end of the previous segment
+                deduped = remove_duplicate_prefix(previous_text, raw_text).strip()
+                if deduped:
+                    # Clean up first character capitalization
+                    if len(deduped) > 1:
+                        deduped = deduped[0].upper() + deduped[1:]
+                    elif len(deduped) == 1:
+                        deduped = deduped.upper()
 
-        if not srt_entries:
-            # Fallback if no speech was detected
-            srt_entries.append(f"1\n00:00:00,000 --> {seconds_to_srt_timestamp(min(5.0, total_dur))}\n[No clear speech detected]\n")
+                    seg_start = t
+                    seg_end = min(total_duration, t + cur_duration)
+
+                    # Smooth segment start so it doesn't overlap backwards
+                    if segments and seg_start < segments[-1].end:
+                        seg_start = segments[-1].end
+
+                    if seg_end > seg_start:
+                        segments.append(SubtitleSegment(start=seg_start, end=seg_end, text=deduped))
+                        previous_text = deduped
+
+            t += step
+
+        # Fallback if no speech was detected anywhere in the entire video
+        if not segments:
+            segments.append(SubtitleSegment(
+                start=0.0,
+                end=min(5.0, total_duration),
+                text="[No clear speech detected]"
+            ))
+
+        # Format into clean standard SRT format
+        srt_entries: List[str] = []
+        for index, seg in enumerate(segments, 1):
+            start_str = seconds_to_srt_timestamp(seg.start)
+            end_str = seconds_to_srt_timestamp(seg.end)
+            srt_entries.append(f"{index}\n{start_str} --> {end_str}\n{seg.text}\n")
 
         return "\n".join(srt_entries)

@@ -236,8 +236,8 @@ class VideoEngine:
             return res[0]
         return None
 
-    def extract_audio(self, filepath, output_wav=None):
-        """Extract audio track as standard 16kHz mono WAV for dubbing."""
+    def extract_audio(self, filepath, output_wav=None, enhance_speech=False):
+        """Extract audio track as standard 16kHz mono WAV for dubbing or transcription."""
         if not os.path.exists(filepath) or not self._has_binary(self.ffmpeg_path):
             return None
 
@@ -252,8 +252,10 @@ class VideoEngine:
                 "-acodec", "pcm_s16le",
                 "-ar", "16000",
                 "-ac", "1",
-                "-y", output_wav
             ]
+            if enhance_speech:
+                cmd.extend(["-af", "highpass=f=100,lowpass=f=3800,afftdn=nf=-20,dynaudnorm=f=150:g=15"])
+            cmd.extend(["-y", output_wav])
             subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
             if os.path.exists(output_wav) and os.path.getsize(output_wav) > 0:
                 return output_wav
