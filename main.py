@@ -450,8 +450,23 @@ class VideoTranslateApp(tk.Tk):
                 on_progress=on_progress
             )
 
+            # If existing SRT on disk was empty or stale, re-extract fresh script
             if not full_khmer_script or not full_khmer_script.strip():
-                raise RuntimeError("Translation to Khmer produced no text.")
+                self.update_progress_safe("Re-extracting fresh subtitles...", 15)
+                self.script_extractor.extract_script_to_srt(
+                    video_path=filepath,
+                    output_srt_path=source_srt_path,
+                    on_progress=lambda m, p: self.update_progress_safe(f"Step 1/4: {m}", min(25, int(p * 0.25)))
+                )
+                khmer_segments, full_khmer_script = self.dubbing_engine.translate_script(
+                    source_srt_path=source_srt_path,
+                    output_khmer_srt=khmer_srt_path,
+                    output_khmer_txt=khmer_txt_path,
+                    on_progress=on_progress
+                )
+
+            if not full_khmer_script or not full_khmer_script.strip():
+                raise RuntimeError("Translation to Khmer produced no text. Please verify internet connection.")
 
             # Probe exact video duration for precision timeline alignment
             meta = self.engine.probe_video_metadata(filepath)
