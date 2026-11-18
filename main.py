@@ -442,8 +442,8 @@ class VideoTranslateApp(tk.Tk):
                 )
 
             # Step 2: Translate script to Khmer
-            self.update_progress_safe("Step 2/4: Translating script to Khmer...", 30)
-            full_khmer_script = self.dubbing_engine.translate_script(
+            self.update_progress_safe("Step 2/4: Translating subtitles to Khmer...", 30)
+            khmer_segments, full_khmer_script = self.dubbing_engine.translate_script(
                 source_srt_path=source_srt_path,
                 output_khmer_srt=khmer_srt_path,
                 output_khmer_txt=khmer_txt_path,
@@ -453,24 +453,28 @@ class VideoTranslateApp(tk.Tk):
             if not full_khmer_script or not full_khmer_script.strip():
                 raise RuntimeError("Translation to Khmer produced no text.")
 
-            # Step 3: Synthesize authentic Khmer voiceover (Edge TTS Neural / gTTS)
-            self.update_progress_safe(f"Step 3/4: Generating Khmer {voice} voiceover...", 55)
-            generated_audio = self.dubbing_engine.generate_voice(
-                khmer_text=full_khmer_script,
+            # Probe exact video duration for precision timeline alignment
+            meta = self.engine.probe_video_metadata(filepath)
+            video_duration = meta.get("duration", 0.0)
+
+            # Step 3: Synthesize authentic Khmer voiceover SYNCHRONIZED IN REALTIME with video speech
+            self.update_progress_safe(f"Step 3/4: Generating realtime Khmer {voice} voice synced to video speech...", 50)
+            generated_audio = self.dubbing_engine.generate_timed_voice(
+                khmer_segments=khmer_segments,
                 voice_type=voice,
+                total_video_duration=video_duration,
                 output_audio_path=khmer_audio_path,
                 on_progress=on_progress
             )
 
-            # Step 4: Merge voice with video, preserving background audio
-            self.update_progress_safe("Step 4/4: Merging Khmer voice into video...", 80)
-            has_audio = getattr(self.player_view, "has_audio", True)
+            # Step 4: Merge Khmer voice into video and REMOVE 100% of the original sound
+            self.update_progress_safe("Step 4/4: Replacing original audio with pure Khmer voice...", 85)
             self.dubbing_engine.merge_video(
                 video_path=filepath,
                 audio_path=generated_audio,
                 output_video_path=output_path,
-                background_volume=0.20,
-                has_audio=has_audio,
+                remove_original_sound=True,
+                background_volume=0.0,
                 on_progress=on_progress
             )
 
