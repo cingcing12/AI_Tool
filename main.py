@@ -18,7 +18,7 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 from src.ui import RoundedCard, RoundedButton, RoundedProgressBar, YouTubePlayerView
-from src.core import VideoEngine, ScriptExtractor, DubbingEngine
+from src.core import VideoEngine, ScriptExtractor, DubbingEngine, VoxCPMEngine
 
 
 class VideoTranslateApp(tk.Tk):
@@ -38,7 +38,12 @@ class VideoTranslateApp(tk.Tk):
         # Core Engines
         self.engine = VideoEngine(base_dir=APP_DIR)
         self.script_extractor = ScriptExtractor(model_size="base")
-        self.dubbing_engine = DubbingEngine(ffmpeg_path=self.engine.ffmpeg_path, temp_dir=self.engine.temp_dir)
+        self.voxcpm_engine = VoxCPMEngine(ffmpeg_path=self.engine.ffmpeg_path, temp_dir=self.engine.temp_dir)
+        self.dubbing_engine = DubbingEngine(
+            ffmpeg_path=self.engine.ffmpeg_path,
+            temp_dir=self.engine.temp_dir,
+            voxcpm_engine=self.voxcpm_engine
+        )
 
         # Variables
         self.video_path_var = tk.StringVar(value="")
@@ -46,6 +51,7 @@ class VideoTranslateApp(tk.Tk):
         self.output_folder = default_downloads if os.path.exists(default_downloads) else os.path.expanduser("~")
 
         self.voice_type = "Man"
+        self.custom_reference_audio: Optional[str] = None
         self.status_var = tk.StringVar(value="Ready")
         self.is_processing = False
 
@@ -167,7 +173,7 @@ class VideoTranslateApp(tk.Tk):
         )
         self.btn_browse.pack(fill=tk.X, pady=(0, 8))
 
-        # Button 4: Toggle Voice Button (Man / Woman)
+        # Button 4: Toggle Voice Button (Man / Woman / Clone VoxCPM 2)
         self.btn_voice_toggle = RoundedButton(
             self.right_card.container,
             text="Voice: Man",
@@ -178,7 +184,20 @@ class VideoTranslateApp(tk.Tk):
             radius=12,
             height=36
         )
-        self.btn_voice_toggle.pack(fill=tk.X, pady=(0, 8))
+        self.btn_voice_toggle.pack(fill=tk.X, pady=(0, 6))
+
+        # Button 4b: Voice Reference / Clone Sample (For VoxCPM 2)
+        self.btn_voice_sample = RoundedButton(
+            self.right_card.container,
+            text="Sample: Video Audio",
+            command=self.configure_clone_sample,
+            bg_color="#94a3b8",
+            hover_color="#64748b",
+            text_color="#ffffff",
+            radius=12,
+            height=32
+        )
+        self.btn_voice_sample.pack(fill=tk.X, pady=(0, 8))
 
         # Button 5: Start Dubbing (Bottom position)
         self.btn_start = RoundedButton(
@@ -237,6 +256,7 @@ class VideoTranslateApp(tk.Tk):
         self.btn_extract_script.set_state(state)
         self.btn_browse.set_state(state)
         self.btn_voice_toggle.set_state(state)
+        self.btn_voice_sample.set_state(state)
         self.btn_start.set_state(state)
 
     def _poll_ui_queue(self):
@@ -377,15 +397,65 @@ class VideoTranslateApp(tk.Tk):
             self.status_var.set("Ready")
 
     def toggle_voice(self):
-        """Action 4 (Voice): Toggle between Man and Woman on each click."""
+        """Action 4 (Voice): Cycle between Man, Woman, and Clone (VoxCPM 2)."""
         if self.voice_type == "Man":
             self.voice_type = "Woman"
             self.btn_voice_toggle.set_text("Voice: Woman")
             self.btn_voice_toggle.set_colors("#db2777", "#be185d")
+            self.btn_voice_sample.set_text("Sample: Edge TTS (F)")
+            self.btn_voice_sample.set_colors("#94a3b8", "#64748b")
+        elif self.voice_type == "Woman":
+            self.voice_type = "Clone"
+            self.btn_voice_toggle.set_text("Voice: Clone (VoxCPM 2)")
+            self.btn_voice_toggle.set_colors("#7c3aed", "#6d28d9")
+            sample_name = os.path.basename(self.custom_reference_audio) if self.custom_reference_audio else "Video Audio"
+            if len(sample_name) > 16:
+                sample_name = sample_name[:13] + "..."
+            self.btn_voice_sample.set_text(f"Sample: {sample_name}")
+            self.btn_voice_sample.set_colors("#0d9488", "#0f766e")
         else:
             self.voice_type = "Man"
             self.btn_voice_toggle.set_text("Voice: Man")
             self.btn_voice_toggle.set_colors("#ea580c", "#c2410c")
+            self.btn_voice_sample.set_text("Sample: Edge TTS (M)")
+            self.btn_voice_sample.set_colors("#94a3b8", "#64748b")
+
+    def configure_clone_sample(self):
+        """Configure reference voice sample for VoxCPM 2 cloning."""
+        if self.voice_type != "Clone":
+            self.voice_type = "Clone"
+            self.btn_voice_toggle.set_text("Voice: Clone (VoxCPM 2)")
+            self.btn_voice_toggle.set_colors("#7c3aed", "#6d28d9")
+
+        choice = messagebox.askyesnocancel(
+            "VoxCPM 2 Voice Clone Reference",
+            "Configure Voice Sample for VoxCPM 2 Cloning:\n\n"
+            "• Click YES: Browse & upload custom reference voice audio (.wav / .mp3)\n"
+            "• Click NO: Use speaker voice automatically extracted from loaded video\n"
+            "• Click CANCEL: Keep current setting"
+        )
+        if choice is True:
+            filetypes = [
+                ("Audio Files", "*.wav *.mp3 *.m4a *.flac *.aac"),
+                ("All Files", "*.*")
+            ]
+            selected = filedialog.askopenfilename(
+                title="Select Reference Voice Sample (5-10s speech)",
+                filetypes=filetypes
+            )
+            if selected and os.path.exists(selected):
+                self.custom_reference_audio = selected
+                short_name = os.path.basename(selected)
+                if len(short_name) > 16:
+                    short_name = short_name[:13] + "..."
+                self.btn_voice_sample.set_text(f"Sample: {short_name}")
+                self.btn_voice_sample.set_colors("#0d9488", "#0f766e")
+                self.status_var.set(f"Cloned Voice Reference: {os.path.basename(selected)}")
+        elif choice is False:
+            self.custom_reference_audio = None
+            self.btn_voice_sample.set_text("Sample: Video Audio")
+            self.btn_voice_sample.set_colors("#0d9488", "#0f766e")
+            self.status_var.set("Voice Clone Reference: Loaded Video Audio")
 
     def start_dubbing(self):
         """Action 5 (Start): Start dubbing and save output to the destination folder."""
@@ -410,7 +480,8 @@ class VideoTranslateApp(tk.Tk):
 
         # Target output filename
         base_name = os.path.splitext(os.path.basename(filepath))[0]
-        output_filename = f"{base_name}_dubbed_{self.voice_type.lower()}.mp4"
+        voice_tag = "cloned" if "clone" in self.voice_type.lower() else self.voice_type.lower()
+        output_filename = f"{base_name}_dubbed_{voice_tag}.mp4"
         output_full_path = os.path.join(self.output_folder, output_filename)
 
         thread = threading.Thread(
@@ -423,10 +494,11 @@ class VideoTranslateApp(tk.Tk):
     def _dubbing_worker(self, filepath, voice, output_path):
         """Worker thread executing end-to-end Khmer dubbing pipeline."""
         base_name = os.path.splitext(os.path.basename(filepath))[0]
+        voice_tag = "cloned" if "clone" in voice.lower() else voice.lower()
         source_srt_path = os.path.join(self.output_folder, f"{base_name}_subtitles.srt")
         khmer_srt_path = os.path.join(self.output_folder, f"{base_name}_khmer.srt")
         khmer_txt_path = os.path.join(self.output_folder, f"{base_name}_khmer.txt")
-        khmer_audio_path = os.path.join(self.output_folder, f"{base_name}_khmer_{voice.lower()}.mp3")
+        khmer_audio_path = os.path.join(self.output_folder, f"{base_name}_khmer_{voice_tag}.mp3")
 
         def on_progress(msg, pct):
             self.update_progress_safe(msg, pct)
@@ -472,13 +544,32 @@ class VideoTranslateApp(tk.Tk):
             meta = self.engine.probe_video_metadata(filepath)
             video_duration = meta.get("duration", 0.0)
 
+            # If Voice Cloning is selected, ensure reference voice sample is ready
+            ref_sample_path = None
+            is_clone = "clone" in voice.lower()
+            if is_clone:
+                if self.custom_reference_audio and os.path.exists(self.custom_reference_audio):
+                    ref_sample_path = self.custom_reference_audio
+                else:
+                    self.update_progress_safe("Step 2.5/4: Extracting speaker sample from video for VoxCPM 2...", 45)
+                    ref_sample_path = os.path.join(self.output_folder, f"{base_name}_speaker_sample.wav")
+                    start_s = khmer_segments[0].start if khmer_segments else 1.0
+                    self.voxcpm_engine.extract_reference_clip(
+                        video_or_audio_path=filepath,
+                        output_wav_path=ref_sample_path,
+                        start_sec=start_s,
+                        duration_sec=6.0
+                    )
+
             # Step 3: Synthesize authentic Khmer voiceover SYNCHRONIZED IN REALTIME with video speech
-            self.update_progress_safe(f"Step 3/4: Generating realtime Khmer {voice} voice synced to video speech...", 50)
+            v_desc = "VoxCPM 2 Cloned" if is_clone else voice
+            self.update_progress_safe(f"Step 3/4: Generating realtime Khmer {v_desc} voice synced to video speech...", 50)
             generated_audio = self.dubbing_engine.generate_timed_voice(
                 khmer_segments=khmer_segments,
                 voice_type=voice,
                 total_video_duration=video_duration,
                 output_audio_path=khmer_audio_path,
+                reference_audio_path=ref_sample_path,
                 on_progress=on_progress
             )
 
@@ -502,11 +593,14 @@ class VideoTranslateApp(tk.Tk):
                     self.video_path_var.set(output_path)
                 except Exception:
                     pass
+                desc = "VoxCPM 2 Cloned Voice" if is_clone else f"{voice} voice"
+                sample_info = f"\n🎙️ Speaker Reference Clip:\n{ref_sample_path}\n" if is_clone and ref_sample_path else ""
                 messagebox.showinfo(
                     "Dubbing Complete! 🎉",
-                    f"Video successfully dubbed in Khmer ({voice} voice)!\n\n"
+                    f"Video successfully dubbed in Khmer ({desc})!\n\n"
                     f"🎬 Output Video:\n{output_path}\n\n"
-                    f"🔊 Khmer Audio:\n{khmer_audio_path}\n\n"
+                    f"🔊 Khmer Audio:\n{khmer_audio_path}\n"
+                    f"{sample_info}\n"
                     f"📝 Khmer Subtitles:\n{khmer_srt_path}\n\n"
                     f"The dubbed video is loaded in the player. Click Play to watch!"
                 )

@@ -11,7 +11,7 @@ import time
 import asyncio
 import subprocess
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 
 @dataclass
@@ -127,10 +127,22 @@ def translate_text_to_khmer(text: str) -> str:
 class DubbingEngine:
     """High-Performance Khmer Video Dubbing & Realtime Audio Sync Engine."""
 
-    def __init__(self, ffmpeg_path: str = "ffmpeg", temp_dir: Optional[str] = None):
+    def __init__(
+        self,
+        ffmpeg_path: str = "ffmpeg",
+        temp_dir: Optional[str] = None,
+        voxcpm_engine: Optional[Any] = None
+    ):
         self.ffmpeg_path = ffmpeg_path
         self.temp_dir = temp_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "temp")
         os.makedirs(self.temp_dir, exist_ok=True)
+        self.voxcpm_engine = voxcpm_engine
+        if self.voxcpm_engine is None:
+            try:
+                from .voxcpm_engine import VoxCPMEngine
+                self.voxcpm_engine = VoxCPMEngine(ffmpeg_path=self.ffmpeg_path, temp_dir=self.temp_dir)
+            except Exception:
+                self.voxcpm_engine = None
 
     def probe_duration(self, audio_file: str) -> float:
         """Probe exact audio duration in seconds via FFmpeg."""
@@ -216,14 +228,35 @@ class DubbingEngine:
 
         return khmer_segments, full_khmer_script
 
-    def synthesize_single_line(self, text: str, voice_type: str, output_path: str) -> bool:
+    def synthesize_single_line(
+        self,
+        text: str,
+        voice_type: str,
+        output_path: str,
+        reference_audio_path: Optional[str] = None
+    ) -> bool:
         """
         Synthesize a single line of Khmer speech.
-        Guaranteed 100% gender adherence:
-        - When Man: Edge TTS km-KH-PisethNeural with pitch-shifted male fallback. NEVER WOMAN VOICE!
+        - When Clone: Uses VoxCPM 2 zero-shot voice cloning with reference speaker sample.
+        - When Man: Edge TTS km-KH-PisethNeural with pitch-shifted male fallback.
         - When Woman: Edge TTS km-KH-SreymomNeural with female gTTS fallback.
         """
         voice_gender = voice_type.lower()
+
+        # 0. VoxCPM 2 Voice Cloning (Khmer)
+        if "clone" in voice_gender:
+            if reference_audio_path and os.path.exists(reference_audio_path) and self.voxcpm_engine:
+                try:
+                    ok = self.voxcpm_engine.synthesize_khmer_cloned(
+                        text=text.strip(),
+                        reference_wav_path=reference_audio_path,
+                        output_path=output_path
+                    )
+                    if ok:
+                        return True
+                except Exception as exc:
+                    print(f"[VoxCPM 2 Voice Clone Fallback]: {exc}")
+
         is_man = "man" in voice_gender or "male" in voice_gender
         edge_voice = "km-KH-PisethNeural" if is_man else "km-KH-SreymomNeural"
 
@@ -285,6 +318,7 @@ class DubbingEngine:
         voice_type: str = "Man",
         total_video_duration: float = 0.0,
         output_audio_path: Optional[str] = None,
+        reference_audio_path: Optional[str] = None,
         on_progress: Optional[Callable[[str, int], None]] = None
     ) -> str:
         """
@@ -360,7 +394,12 @@ class DubbingEngine:
 
             # 2. Synthesize Khmer speech for this segment
             raw_part = os.path.join(parts_dir, f"raw_part_{i:04d}.mp3")
-            success = self.synthesize_single_line(seg.text, voice_type, raw_part)
+            success = self.synthesize_single_line(
+                seg.text,
+                voice_type,
+                raw_part,
+                reference_audio_path=reference_audio_path
+            )
             if not success or not os.path.exists(raw_part) or os.path.getsize(raw_part) == 0:
                 continue
 

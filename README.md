@@ -34,11 +34,19 @@
   - Generates standard SubRip (`.srt`) subtitle files with exact millisecond timestamps (`00:01:23,456 --> 00:01:26,789`).
   - Supports both **SpeechRecognition** and **faster-whisper**.
 
-### ⚡ 4. Blazing Fast 25+ FPS In-Memory Streaming
+### 🗣️ 4. Khmer Voice Cloning powered by VoxCPM 2
+- **Zero-Shot Timbre Cloning:** Clones the speaker's vocal characteristics into authentic Khmer speech using OpenBMB's **VoxCPM 2** diffusion-autoregressive architecture.
+- **Dual Sample Modes:**
+  - **Auto Video Sample:** Automatically extracts a 5-6s clean speech sample from the loaded video.
+  - **Custom Reference Upload:** Upload your own `.wav` or `.mp3` voice clip for personalized dubbing.
+- **Realtime Timeline Synchronization:** Synchronized to video speech timestamps with automated silence padding and dynamic atempo alignment.
+- **Pure Khmer Audio Replacement:** 100% cleanly strips original audio and merges the cloned Khmer narration track.
+
+### ⚡ 5. Blazing Fast 25+ FPS In-Memory Streaming
 - Video frames are decoded via a continuous FFmpeg stdout pipe directly into RAM as raw RGB24 buffers (`P6` PPM format).
 - Zero disk wear and instant frame access.
 
-### 📐 5. Dynamic Aspect Ratio Preservation
+### 📐 6. Dynamic Aspect Ratio Preservation
 - Automatically probes video dimensions to preserve the original aspect ratio (16:9, 9:16 vertical, 4:3, 1:1 square).
 - Maintains geometric proportions on resize without distortion.
 
@@ -53,11 +61,13 @@
 │
 ├── src/                          # Modular Clean Architecture
 │   ├── core/                     # Backend Processing Engine
-│   │   ├── __init__.py           # Exports VideoEngine, AudioPlayer, ScriptExtractor
+│   │   ├── __init__.py           # Exports VideoEngine, AudioPlayer, ScriptExtractor, DubbingEngine, VoxCPMEngine
 │   │   ├── audio_daemon.ps1      # Media Foundation background audio worker
 │   │   ├── audio_player.py       # Auto-switching Windows audio player
+│   │   ├── dubbing_engine.py     # Timeline-synchronized dubbing & merging engine
 │   │   ├── script_extractor.py   # Speech-to-Text & SRT subtitle generator
-│   │   └── video_engine.py       # FFmpeg streaming, frame extraction, metadata probing
+│   │   ├── video_engine.py       # FFmpeg streaming, frame extraction, metadata probing
+│   │   └── voxcpm_engine.py      # VoxCPM 2 Khmer zero-shot voice cloning engine
 │   │
 │   └── ui/                       # Frontend Presentation Layer
 │       ├── __init__.py           # Exports custom widgets & YouTubePlayerView
@@ -68,7 +78,7 @@
 │   └── .gitkeep
 │
 ├── main.py                       # Main Application Entry Point
-├── requirements.txt              # Production dependencies
+├── requirements.txt              # Production dependencies (includes voxcpm)
 ├── run.bat                       # 1-Click Windows Batch Launcher
 ├── run.ps1                       # 1-Click PowerShell Launcher
 ├── .gitignore                    # Git rules (excludes venv, temp files, large exes)
