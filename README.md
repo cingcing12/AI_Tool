@@ -16,7 +16,7 @@
 | No. | Member Name | Student ID | Official Role | Core Responsibility |
 | :---: | :--- | :--- | :--- | :--- |
 | **1** | **Vong Sokpheak** | `DUC-PG-A-2024146` | **Project Manager** | Project management, AI dubbing architecture & timeline sync lead |
-| **2** | **Veasna Reaksa** | — | **Frontend Dev** | Desktop Tkinter UI/UX, Canvas video player & player controls |
+| **2** | **Veasna Reaksa** | test | **Frontend Dev** | Desktop Tkinter UI/UX, Canvas video player & player controls |
 | **3** | **Eang Panha** | — | **Backend Dev** | FFmpeg video pipeline, audio-video muxing & translation |
 | **4** | **Nok Sreylinh** | `DUC-PG-A-20240199` | **QA & DevOps Specialist** | Audio daemon, testing, deployment & user documentation |
 | **5** | **Him Lihour** | DUC-PG-A-20240776 | **Backend Dev** | Speech-to-Text extraction, audio enhancement & SRT generator |
