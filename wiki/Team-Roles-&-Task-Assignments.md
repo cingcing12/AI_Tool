@@ -1,144 +1,124 @@
-# 👥 Team Roles & Task Assignments
+# 👥 ក្រុម 9 - Team Roles & Task Assignments
 
-This document outlines the organization, division of labor, individual responsibilities, and assigned engineering tasks for the **Video Translate & Subtitle Studio** group assignment.
+This document outlines the organization, division of labor, individual responsibilities, and assigned engineering tasks for **ក្រុម 9 (Group 9)** in the **Video Translate & Subtitle Studio** project.
 
 ---
 
-## 🏛️ Team Roster & Role Matrix
+## 🏛️ Team Roster & Role Structure
 
 ```mermaid
 graph TD
-    subgraph Leadership
-        EP["👑 Eang Panha<br/><b>Project Lead & Lead Architect</b>"]
+    subgraph Management["1. Project Management"]
+        PM["👑 <b>Vong Sokpheak</b><br/><b>Project Manager</b><br/>ID: <code>DUC-PG-A-2024146</code>"]
     end
 
-    subgraph Backend_AI["Backend & AI Core"]
-        VS["🧠 Vong Sokpheak<br/><b>Core AI & Audio Synthesis Engineer</b><br/>ID: DUC-PG-A-2024146"]
-        HL["🎙️ HIM Lihour<br/><b>NLP & Speech Processing Engineer</b>"]
+    subgraph Frontend["2. Frontend Engineering"]
+        FE["🎨 <b>Veasna Reaksa</b><br/><b>Frontend Dev</b>"]
     end
 
-    subgraph UI_DevOps["UI & Systems Integration"]
-        NS["🎨 NOK Sreylinh<br/><b>Frontend UI/UX & Player Designer</b><br/>ID: DUC-PG-A-2024052"]
-        VR["🛠️ VEASNA REAKSA<br/><b>DevOps, QA & Audio Integration Lead</b>"]
+    subgraph Backend["3. Backend Engineering"]
+        BE1["⚙️ <b>Eang Panha</b><br/><b>Backend Dev</b>"]
+        BE2["🎙️ <b>Him Lihour</b><br/><b>Backend Dev</b>"]
     end
 
-    EP --> VS
-    EP --> HL
-    EP --> NS
-    EP --> VR
+    subgraph DevOps_QA["4. QA & DevOps"]
+        QA["🛠️ <b>Nok Sreylinh</b><br/><b>QA & DevOps Specialist</b><br/>ID: <code>DUC-PG-A-2024052</code>"]
+    end
+
+    PM --> FE
+    PM --> BE1
+    PM --> BE2
+    PM --> QA
 ```
 
 ---
 
-## 📋 Comprehensive RACI Matrix
+## 📋 Comprehensive RACI Matrix (ក្រុម 9)
 
 - **R** = **Responsible** (Does the work to achieve the task)
 - **A** = **Accountable** (Final approval and quality ownership)
 - **C** = **Consulted** (Provides input and collaborates)
 - **I** = **Informed** (Kept updated on progress)
 
-| Project Module / Work Package | Eang Panha (Lead) | Vong Sokpheak | HIM Lihour | NOK Sreylinh | VEASNA REAKSA |
+| Project Work Package | Vong Sokpheak (PM) | Veasna Reaksa (FE) | Eang Panha (BE) | Nok Sreylinh (QA/DevOps) | Him Lihour (BE) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **System Architecture & Design** | **A** | R | C | C | C |
-| **Video Decoding & In-Memory Streaming** | A | C | I | R | C |
-| **Speech-to-Text & Subtitle Extraction** | A | C | **R** | I | C |
-| **Khmer Neural Translation Engine** | A | C | **R** | I | I |
-| **Realtime Synchronized Khmer Voiceover** | A | **R** | C | I | I |
-| **Audio-Video Clean Merging (FFmpeg)** | A | **R** | I | I | C |
-| **Desktop UI / UX & Custom Widgets** | A | I | I | **R** | C |
-| **Windows Audio Device Daemon (WASAPI)** | A | C | I | I | **R** |
-| **Environment Packaging (UV, Batch, PS1)** | A | I | I | I | **R** |
-| **Quality Assurance & Verification** | **A** | C | C | C | **R** |
+| **Project Planning & Governance** | **A / R** | C | C | C | C |
+| **Desktop UI / UX & Custom Widgets** | A | **R** | I | C | I |
+| **Cinema Player (Canvas Viewport)** | A | **R** | C | I | I |
+| **In-Memory FFmpeg Video Streaming** | A | C | **R** | I | I |
+| **Speech-to-Text & Subtitle Extraction** | A | I | C | I | **R** |
+| **Khmer Neural Translation Engine** | A | I | **R** | I | C |
+| **Neural Voiceover Synthesis (Edge-TTS)** | **A / R** | I | C | I | I |
+| **Realtime Audio Timeline Sync** | **A / R** | I | C | I | I |
+| **Clean Audio Replacement & Merge** | A | I | **R** | I | I |
+| **Windows WASAPI Audio Daemon** | A | I | I | **R** | I |
+| **DevOps & 1-Click Launchers** | A | I | I | **R** | I |
+| **Quality Assurance & Test Suite** | A | C | C | **R** | C |
 
 ---
 
-## 🎯 Individual Task Assignments & Deliverables
+## 🎯 Individual Task Breakdown & Deliverables
 
-### 1. 👑 Eang Panha (Project Lead & System Architect)
-> **Primary Responsibility**: System Architecture, Code Review, Milestone Tracking, and Project Governance.
-
-| Task ID | Task Description | Target Module | Status | Deliverables |
-| :---: | :--- | :--- | :---: | :--- |
-| **EP-01** | Define system requirements and high-level architectural specification. | Architecture | `Completed` | Project Spec Document & Architecture Diagram |
-| **EP-02** | Review and merge Pull Requests across all feature branches into `main`. | Governance | `In Progress` | GitHub PR Approvals & Conflict Resolution |
-| **EP-03** | Manage Sprint milestones, deadline adherence, and deliverables tracking. | Management | `In Progress` | GitHub Project Board & Milestones |
-| **EP-04** | Lead final system integration testing, bug triage, and presentation demo. | Release | `Planned` | Slide Deck & Final Submission Video |
-
----
-
-### 2. 🧠 Vong Sokpheak (Core AI & Audio Synthesis Engineer)
+### 1. 👑 Vong Sokpheak (Project Manager)
 > **Student ID**: `DUC-PG-A-2024146`  
-> **Primary Responsibility**: Neural TTS Dubbing Engine, Timeline Synchronization, and Audio-Video Merging.
+> **Core Role**: Project Management, AI Dubbing Architecture & Audio Timeline Synchronization.
 
-| Task ID | Task Description | Target Module | Status | Deliverables |
+| Task ID | Task Description | Target File / Module | Status | Deliverables |
 | :---: | :--- | :--- | :---: | :--- |
-| **VS-01** | Implement Edge-TTS neural voice synthesis for Khmer (`km-KH-PisethNeural` and `km-KH-SreymomNeural`). | `src/core/dubbing_engine.py` | `Completed` | Async TTS synthesis function |
-| **VS-02** | Implement pitch-matched female-to-male fallback filter (`asetrate=44100*0.82,atempo=1.22`) to guarantee 100% male voice adherence. | `src/core/dubbing_engine.py` | `Completed` | Pitch shifting filter pipeline |
-| **VS-03** | Engineer realtime timeline synchronization algorithm with gap padding and dynamic `atempo` chaining (zero word cutoff). | `src/core/dubbing_engine.py` | `Completed` | `generate_timed_voice` with dynamic atempo |
-| **VS-04** | Implement clean FFmpeg audio-video muxing (`-map 0:v:0 -map 1:a:0`) to remove original audio 100% and insert Khmer voiceover. | `src/core/dubbing_engine.py` | `Completed` | `merge_video` function |
-| **VS-05** | Benchmark audio-visual synchronization on 16:9 and 9:16 vertical short videos. | Testing | `In Progress` | Sync validation report |
+| **PM-01** | Define project scope, milestone timelines, and coordinate team sprint tasks. | Management | `Completed` | Sprint planning & task matrix |
+| **PM-02** | Implement Edge-TTS neural voice synthesis (`km-KH-PisethNeural` and `km-KH-SreymomNeural`). | `src/core/dubbing_engine.py` | `Completed` | Async Edge-TTS engine |
+| **PM-03** | Engineer realtime timeline synchronization with dynamic `atempo` chaining (zero word cutoff). | `src/core/dubbing_engine.py` | `Completed` | `generate_timed_voice` with dynamic atempo |
+| **PM-04** | Implement female-to-male pitch shift fallback (`asetrate=44100*0.82,atempo=1.22`) to guarantee 100% pure male voice. | `src/core/dubbing_engine.py` | `Completed` | Male pitch shift pipeline |
+| **PM-05** | Final system integration sign-off, conflict resolution, and presentation demo. | Governance | `In Progress` | Final project release & demo |
 
 ---
 
-### 3. 🎙️ HIM Lihour (NLP & Speech Processing Engineer)
-> **Primary Responsibility**: Speech-to-Text Transcription, Audio Filtering, Subtitle Parsing, and Khmer Translation.
+### 2. 🎨 Veasna Reaksa (Frontend Dev)
+> **Core Role**: Desktop UI/UX, Custom Widgets, Media Viewport & Player Controls.
 
-| Task ID | Task Description | Target Module | Status | Deliverables |
+| Task ID | Task Description | Target File / Module | Status | Deliverables |
 | :---: | :--- | :--- | :---: | :--- |
-| **HL-01** | Develop 16kHz mono speech enhancement filter with bandpass vocal isolation for transcription. | `src/core/script_extractor.py` | `Completed` | Audio preprocessing pipeline |
-| **HL-02** | Implement 7.0s overlapping sliding window transcription with prefix deduplication algorithm. | `src/core/script_extractor.py` | `Completed` | `_transcribe_speech_recognition` |
-| **HL-03** | Build two-pass sub-slice recovery to prevent dropped subtitle segments in quiet or music-heavy audio. | `src/core/script_extractor.py` | `Completed` | Sub-window fallback parser |
-| **HL-04** | Integrate multi-provider Khmer translation (`googletrans` authenticated session + `deep_translator` fallback) with 429 rate limit immunity. | `src/core/dubbing_engine.py` | `Completed` | `translate_text_to_khmer` |
-| **HL-05** | Format and validate standard SubRip (`.srt`) timestamps (`HH:MM:SS,mmm`). | `src/core/script_extractor.py` | `Completed` | SRT parser & formatter |
+| **FE-01** | Design clean modern Tkinter layout with responsive side control panel and video preview. | `main.py`, `src/ui/` | `Completed` | Main application layout |
+| **FE-02** | Develop YouTube/VLC-style media viewport (`player_view.py`) with cinema black background. | `src/ui/player_view.py` | `Completed` | Canvas cinema video player |
+| **FE-03** | Implement interactive controls: Play/Pause toggle, timeline scrubber, and seek indicator. | `src/ui/player_view.py` | `Completed` | Interactive playback controls |
+| **FE-04** | Build YouTube-style double-click skip (+10s right side, -10s left side). | `src/ui/player_view.py` | `Completed` | Double-click skip handler |
+| **FE-05** | Build reusable custom components (`RoundedCard`, `RoundedButton`, `RoundedProgressBar`). | `src/ui/widgets.py` | `Completed` | Custom widget package |
 
 ---
 
-### 4. 🎨 NOK Sreylinh (Frontend UI/UX & Media Player Designer)
+### 3. ⚙️ Eang Panha (Backend Dev)
+> **Core Role**: FFmpeg Video Streaming, Video Merging & Khmer Translation.
+
+| Task ID | Task Description | Target File / Module | Status | Deliverables |
+| :---: | :--- | :--- | :---: | :--- |
+| **BE-01** | Implement in-memory FFmpeg RGB24 frame streaming (25+ FPS pipe) in `video_engine.py`. | `src/core/video_engine.py` | `Completed` | Frame decoder engine |
+| **BE-02** | Build multi-provider Khmer translation engine (`googletrans` + `deep_translator`) with 429 rate limit immunity. | `src/core/dubbing_engine.py` | `Completed` | `translate_text_to_khmer` |
+| **BE-03** | Implement clean FFmpeg audio-video muxing (`-map 0:v:0 -map 1:a:0`) removing 100% original sound. | `src/core/dubbing_engine.py` | `Completed` | `merge_video` function |
+| **BE-04** | Develop dynamic aspect ratio probe and preservation logic (16:9, 9:16 vertical, 4:3, 1:1). | `src/core/video_engine.py` | `Completed` | Aspect ratio math logic |
+
+---
+
+### 4. 🛠️ Nok Sreylinh (QA & DevOps Specialist)
 > **Student ID**: `DUC-PG-A-2024052`  
-> **Primary Responsibility**: Desktop GUI Design, Canvas Video Player, Controls, and Interactive Progress Display.
+> **Core Role**: DevOps Packaging, Audio Routing Daemon, Testing & User Documentation.
 
-| Task ID | Task Description | Target Module | Status | Deliverables |
+| Task ID | Task Description | Target File / Module | Status | Deliverables |
 | :---: | :--- | :--- | :---: | :--- |
-| **NS-01** | Design clean modern desktop UI layout with responsive side control panel and video preview. | `main.py`, `src/ui/` | `Completed` | Application main window layout |
-| **NS-02** | Develop YouTube/VLC-style media viewport (`player_view.py`) with cinema black background and corner masks. | `src/ui/player_view.py` | `Completed` | Custom Tkinter Canvas Video Player |
-| **NS-03** | Implement interactive playback controls: Play/Pause toggle, double-click skip (`-10s` / `+10s`), and timeline scrubber. | `src/ui/player_view.py` | `Completed` | Seeking and skip event handlers |
-| **NS-04** | Build reusable custom Tkinter UI components (`RoundedCard`, `RoundedButton`, `RoundedProgressBar`). | `src/ui/widgets.py` | `Completed` | Modular widgets package |
-| **NS-05** | Implement thread-safe UI update queue and 4-step progress bar notifications. | `main.py` | `Completed` | Safe GUI thread progress bridge |
+| **QA-01** | Build background WASAPI audio routing worker (`audio_daemon.ps1`) for headphone/speaker switching. | `src/core/audio_daemon.ps1` | `Completed` | Audio device routing daemon |
+| **QA-02** | Embed standalone Gyan FFmpeg 7.x portable binaries into `bin/ffmpeg.exe`. | `bin/ffmpeg.exe` | `Completed` | Portable FFmpeg bundle |
+| **QA-03** | Create 1-click execution scripts (`run.bat` and `run.ps1`) with automatic `.venv` setup. | `run.bat`, `run.ps1` | `Completed` | One-click launch scripts |
+| **QA-04** | Execute end-to-end QA test suite across diverse video formats (MP4, MKV, vertical Reels). | `tests/` | `In Progress` | Test reports & fixtures |
+| **QA-05** | Author User Manual, Installation Guide, and Troubleshooting Wiki documentation. | `wiki/` | `Completed` | Wiki manuals & FAQs |
 
 ---
 
-### 5. 🛠️ VEASNA REAKSA (DevOps, QA & Systems Integration Lead)
-> **Primary Responsibility**: Windows Audio Device Hot-Swapping, FFmpeg Distribution, Packaging, and QA Testing.
+### 5. 🎙️ Him Lihour (Backend Dev)
+> **Core Role**: Audio Extraction, Speech-to-Text Transcription & Subtitle Formatting.
 
-| Task ID | Task Description | Target Module | Status | Deliverables |
+| Task ID | Task Description | Target File / Module | Status | Deliverables |
 | :---: | :--- | :--- | :---: | :--- |
-| **VR-01** | Engineer background WASAPI audio daemon in PowerShell (`audio_daemon.ps1`) for seamless headphone/speaker hot-swapping. | `src/core/audio_daemon.ps1` | `Completed` | Background audio routing script |
-| **VR-02** | Embed standalone Gyan FFmpeg 7.x portable binaries into `bin/` with automated PATH discovery. | `bin/ffmpeg.exe` | `Completed` | Portable FFmpeg bundle |
-| **VR-03** | Create 1-click execution scripts (`run.bat` and `run.ps1`) with automatic virtual environment initialization. | `run.bat`, `run.ps1` | `Completed` | One-click launch scripts |
-| **VR-04** | Design comprehensive test suite with diverse video formats (MP4, MKV, MOV, vertical reels). | `tests/` | `In Progress` | Test suite & sample video fixtures |
-| **VR-05** | Author User Manual, Installation Guide, and Troubleshooting Wiki documentation. | `wiki/` | `Completed` | Wiki manuals & FAQs |
-
----
-
-## 📊 Sprint Velocity & Progress Summary
-
-```mermaid
-gantt
-    title Team Sprint Timeline & Milestone Execution
-    dateFormat  YYYY-MM-DD
-    section Sprint 1: Setup & Player
-    Architecture & UI Layout (EP, NS)       :done, s1_1, 2026-11-01, 2026-11-05
-    FFmpeg Pipeline & Player View (VR, NS)  :done, s1_2, 2026-11-04, 2026-11-08
-    section Sprint 2: STT & Translation
-    Speech-to-Text & SRT Parsing (HL)       :done, s2_1, 2026-11-08, 2026-11-12
-    Multi-Provider Khmer Translation (HL)   :done, s2_2, 2026-11-11, 2026-11-14
-    section Sprint 3: Neural Voice Synthesis
-    Edge-TTS Khmer Voices & Fallbacks (VS)  :done, s3_1, 2026-11-13, 2026-11-16
-    100% Male Pitch-Shift Filter (VS)       :done, s3_2, 2026-11-15, 2026-11-17
-    section Sprint 4: Sync & Audio Replace
-    Realtime Timeline Synchronization (VS)  :done, s4_1, 2026-11-17, 2026-11-19
-    Clean Audio Removal & Merge (VS, VR)    :done, s4_2, 2026-11-18, 2026-11-20
-    section Sprint 5: QA & Documentation
-    Integration Benchmarking (VR, EP)       :active, s5_1, 2026-11-20, 2026-11-24
-    Final Wiki, Docs & Presentation (All)   :active, s5_2, 2026-11-21, 2026-11-26
-```
+| **BE-05** | Build 16kHz mono audio extraction with vocal isolation bandpass filtering for clear STT. | `src/core/script_extractor.py` | `Completed` | Audio enhancement filter |
+| **BE-06** | Implement 7.0s overlapping sliding-window transcription (5.0s step) to capture speech boundaries. | `src/core/script_extractor.py` | `Completed` | Sliding window STT |
+| **BE-07** | Build two-pass sub-slice recovery to prevent dropped subtitle segments in quiet or music moments. | `src/core/script_extractor.py` | `Completed` | Sub-slice fallback parser |
+| **BE-08** | Implement SubRip (`.srt`) parser and formatter with exact millisecond timestamps (`HH:MM:SS,mmm`). | `src/core/script_extractor.py` | `Completed` | SRT timestamp formatter |
+| **BE-09** | Engineer prefix deduplication algorithm to eliminate repeated boundary words. | `src/core/script_extractor.py` | `Completed` | Prefix deduplication function |
