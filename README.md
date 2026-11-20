@@ -19,7 +19,7 @@
 | **2** | **Veasna Reaksa** | — | **Frontend Dev** | Desktop Tkinter UI/UX, Canvas video player & player controls |
 | **3** | **Eang Panha** | — | **Backend Dev** | FFmpeg video pipeline, audio-video muxing & translation |
 | **4** | **Nok Sreylinh** | `DUC-PG-A-20240199` | **QA & DevOps Specialist** | Audio daemon, testing, deployment & user documentation |
-| **5** | **Him Lihour** | — | **Backend Dev** | Speech-to-Text extraction, audio enhancement & SRT generator |
+| **5** | **Him Lihour** | DUC-PG-A-20240776 | **Backend Dev** | Speech-to-Text extraction, audio enhancement & SRT generator |
 
 > 📚 **Complete Project Wiki Documentation**: Explore the full [Wiki Documentation](wiki/Home.md) including the [Team RACI Matrix & Task Assignments](wiki/Team-Roles-&-Task-Assignments.md), [System Architecture & Pipeline](wiki/System-Architecture-&-Pipeline.md), [Sprint Milestones](wiki/Sprint-Planning-&-Milestones.md), and [User Manual](wiki/User-Manual-&-Testing-Guide.md).
 
