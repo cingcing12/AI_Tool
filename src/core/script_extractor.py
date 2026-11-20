@@ -141,17 +141,44 @@ class ScriptExtractor:
         return "none"
 
     def _get_whisper_model(self):
-        """Lazy-load WhisperModel on demand."""
+        """Lazy-load WhisperModel on demand with safe CUDA/CPU detection."""
         if self._whisper_model is not None:
             return self._whisper_model
 
         from faster_whisper import WhisperModel
-        compute = "int8" if self.device == "cpu" else "default"
-        self._whisper_model = WhisperModel(
-            self.model_size,
-            device=self.device,
-            compute_type=compute
-        )
+
+        target_device = self.device
+        if target_device == "auto":
+            # Test if CUDA and cublas DLLs can actually be loaded
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    import ctypes
+                    try:
+                        ctypes.cdll.LoadLibrary("cublas64_12.dll")
+                        target_device = "cuda"
+                    except Exception:
+                        target_device = "cpu"
+                else:
+                    target_device = "cpu"
+            except Exception:
+                target_device = "cpu"
+
+        compute = "int8" if target_device == "cpu" else "float16"
+        try:
+            self._whisper_model = WhisperModel(
+                self.model_size,
+                device=target_device,
+                compute_type=compute
+            )
+        except Exception as exc:
+            print(f"[Whisper Model Notice]: {exc}. Falling back to CPU int8.")
+            self._whisper_model = WhisperModel(
+                self.model_size,
+                device="cpu",
+                compute_type="int8"
+            )
+
         return self._whisper_model
 
     def extract_script_to_srt(
@@ -203,12 +230,20 @@ class ScriptExtractor:
                     )
                 except (OSError, Exception) as whisper_err:
                     print(f"[Whisper Warning]: {whisper_err}. Falling back to SpeechRecognition.")
-                    if on_progress:
-                        on_progress("Switching to SpeechRecognition engine...", 20)
-                    srt_content = self._transcribe_speech_recognition(
-                        extracted_wav, video_path, ve, language, on_progress
-                    )
-            else:
+                    srt_content = ""
+
+            # Check if Whisper produced a meaningful transcript
+            has_valid_speech = False
+            if srt_content and len(srt_content.strip()) > 10:
+                lines = [l for l in srt_content.strip().splitlines() if l and not l.isdigit() and "-->" not in l]
+                text_content = " ".join(lines).strip()
+                # Must contain at least 6 meaningful characters (not just single-letter noise)
+                if len(text_content) > 6 and not all(len(w) <= 2 for w in text_content.split()):
+                    has_valid_speech = True
+
+            if not has_valid_speech:
+                if on_progress:
+                    on_progress("Enhancing transcript with SpeechRecognition (Khmer/Auto)...", 30)
                 srt_content = self._transcribe_speech_recognition(
                     extracted_wav, video_path, ve, language, on_progress
                 )
@@ -308,19 +343,28 @@ class ScriptExtractor:
         if on_progress:
             on_progress("Analyzing speech audio...", 20)
 
+        recognizer = sr.Recognizer()
+        recognizer.energy_threshold = 260
+        recognizer.dynamic_energy_threshold = True
+
+        # Smart Khmer audio probe: if audio contains Khmer speech, prioritize km-KH
+        if not language or language in ("auto", "en-US"):
+            try:
+                with sr.AudioFile(audio_path) as s_probe:
+                    probe_data = recognizer.record(s_probe, offset=0.0, duration=min(6.5, total_duration))
+                    km_try = recognizer.recognize_google(probe_data, language="km-KH").strip()
+                    if km_try and re.search(r"[\u1780-\u17ff]", km_try):
+                        target_lang = "km-KH"
+            except Exception:
+                pass
+
         # Method: Overlapping Sliding Window with Prefix Deduplication
         # Window size: 7.0 seconds
         # Overlap: 2.0 seconds (step = 5.0 seconds)
-        # This guarantees that words near boundaries are captured completely in both windows,
-        # and the deduplication algorithm removes the overlap seamlessly!
         window_size = 7.0
         step = 5.0
         segments: List[SubtitleSegment] = []
         previous_text = ""
-
-        recognizer = sr.Recognizer()
-        recognizer.energy_threshold = 280
-        recognizer.dynamic_energy_threshold = True
 
         t = 0.0
         total_steps = max(1, int(total_duration / step) + 1)
@@ -367,6 +411,17 @@ class ScriptExtractor:
                             sub2 = google_recognize_best(recognizer, audio_data, speech_lang=target_lang)
                             if sub2:
                                 raw_text = sub2
+                    except Exception:
+                        pass
+
+                # Sub-slice 3: Try Khmer language recognition if English produced no speech
+                if not raw_text and target_lang != "km-KH":
+                    try:
+                        with sr.AudioFile(audio_path) as source:
+                            audio_data = recognizer.record(source, offset=t, duration=cur_duration)
+                            km_candidate = google_recognize_best(recognizer, audio_data, speech_lang="km-KH")
+                            if km_candidate:
+                                raw_text = km_candidate
                     except Exception:
                         pass
 
