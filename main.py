@@ -396,16 +396,14 @@ class VideoTranslateApp(tk.Tk):
             self.output_folder = selected_dir
             self.status_var.set("Ready")
 
-    def toggle_voice(self):
-        """Action 4 (Voice): Cycle between Man, Woman, and Clone (VoxCPM 2)."""
-        if self.voice_type == "Man":
-            self.voice_type = "Woman"
+    def _update_voice_ui(self):
+        """Synchronize voice selection buttons, indicators, and colors."""
+        if self.voice_type == "Woman":
             self.btn_voice_toggle.set_text("Voice: Woman")
             self.btn_voice_toggle.set_colors("#db2777", "#be185d")
             self.btn_voice_sample.set_text("Sample: Edge TTS (F)")
             self.btn_voice_sample.set_colors("#94a3b8", "#64748b")
-        elif self.voice_type == "Woman":
-            self.voice_type = "Clone"
+        elif self.voice_type == "Clone":
             self.btn_voice_toggle.set_text("Voice: Clone (VoxCPM 2)")
             self.btn_voice_toggle.set_colors("#7c3aed", "#6d28d9")
             sample_name = os.path.basename(self.custom_reference_audio) if self.custom_reference_audio else "Video Audio"
@@ -420,27 +418,40 @@ class VideoTranslateApp(tk.Tk):
             self.btn_voice_sample.set_text("Sample: Edge TTS (M)")
             self.btn_voice_sample.set_colors("#94a3b8", "#64748b")
 
+    def toggle_voice(self):
+        """Action 4 (Voice): Cycle between Man, Woman, and Clone (VoxCPM 2)."""
+        if self.voice_type == "Man":
+            self.voice_type = "Woman"
+        elif self.voice_type == "Woman":
+            self.voice_type = "Clone"
+        else:
+            self.voice_type = "Man"
+        self._update_voice_ui()
+
     def configure_clone_sample(self):
         """Configure reference voice sample for VoxCPM 2 cloning."""
+        prev_voice = self.voice_type
         if self.voice_type != "Clone":
             self.voice_type = "Clone"
-            self.btn_voice_toggle.set_text("Voice: Clone (VoxCPM 2)")
-            self.btn_voice_toggle.set_colors("#7c3aed", "#6d28d9")
+            self._update_voice_ui()
 
         choice = messagebox.askyesnocancel(
             "VoxCPM 2 Voice Clone Reference",
             "Configure Voice Sample for VoxCPM 2 Cloning:\n\n"
-            "• Click YES: Browse & upload custom reference voice audio (.wav / .mp3)\n"
-            "• Click NO: Use speaker voice automatically extracted from loaded video\n"
+            "• Click YES: Select ANY reference audio or video file (.ogg, .opus, .mp3, .wav, .m4a, .mp4, etc.)\n"
+            "  The AI will analyze the person's speech and clone their voice for the dubbing!\n\n"
+            "• Click NO: Use speaker voice automatically extracted from the loaded video\n"
             "• Click CANCEL: Keep current setting"
         )
         if choice is True:
             filetypes = [
-                ("Audio Files", "*.wav *.mp3 *.m4a *.flac *.aac"),
+                ("Media Files (Audio & Video)", "*.ogg *.opus *.mp3 *.wav *.m4a *.aac *.flac *.mp4 *.mov *.mkv *.webm *.avi"),
+                ("Audio Files", "*.ogg *.opus *.mp3 *.wav *.m4a *.aac *.flac"),
+                ("Video Files", "*.mp4 *.mov *.mkv *.webm *.avi"),
                 ("All Files", "*.*")
             ]
             selected = filedialog.askopenfilename(
-                title="Select Reference Voice Sample (5-10s speech)",
+                title="Select Reference Speaker Sample (.ogg, .mp3, .wav, .mp4)",
                 filetypes=filetypes
             )
             if selected and os.path.exists(selected):
@@ -451,11 +462,19 @@ class VideoTranslateApp(tk.Tk):
                 self.btn_voice_sample.set_text(f"Sample: {short_name}")
                 self.btn_voice_sample.set_colors("#0d9488", "#0f766e")
                 self.status_var.set(f"Cloned Voice Reference: {os.path.basename(selected)}")
+            elif not self.custom_reference_audio:
+                if prev_voice != "Clone":
+                    self.voice_type = prev_voice
+                    self._update_voice_ui()
         elif choice is False:
             self.custom_reference_audio = None
             self.btn_voice_sample.set_text("Sample: Video Audio")
             self.btn_voice_sample.set_colors("#0d9488", "#0f766e")
             self.status_var.set("Voice Clone Reference: Loaded Video Audio")
+        else:
+            if prev_voice != "Clone":
+                self.voice_type = prev_voice
+                self._update_voice_ui()
 
     def start_dubbing(self):
         """Action 5 (Start): Start dubbing and save output to the destination folder."""
@@ -504,8 +523,21 @@ class VideoTranslateApp(tk.Tk):
             self.update_progress_safe(msg, pct)
 
         try:
-            # Step 1: Ensure source script is extracted
-            if not os.path.exists(source_srt_path) or os.path.getsize(source_srt_path) == 0:
+            # Step 1: Ensure source script is extracted and contains valid content
+            needs_extraction = True
+            if os.path.exists(source_srt_path):
+                try:
+                    from src.core.dubbing_engine import parse_srt_file
+                    parsed_test = parse_srt_file(source_srt_path)
+                    if parsed_test and any(
+                        p.text and len(p.text.strip()) > 1 and not (p.text.strip().startswith("[") and p.text.strip().endswith("]"))
+                        for p in parsed_test
+                    ):
+                        needs_extraction = False
+                except Exception:
+                    needs_extraction = True
+
+            if needs_extraction:
                 self.update_progress_safe("Step 1/4: Extracting spoken script from video...", 10)
                 self.script_extractor.extract_script_to_srt(
                     video_path=filepath,
@@ -538,7 +570,7 @@ class VideoTranslateApp(tk.Tk):
                 )
 
             if not full_khmer_script or not full_khmer_script.strip():
-                raise RuntimeError("Translation to Khmer produced no text. Please verify internet connection.")
+                raise RuntimeError("No dialogue or speech could be recognized from the video to dub! Please make sure the video has audible speech.")
 
             # Probe exact video duration for precision timeline alignment
             meta = self.engine.probe_video_metadata(filepath)
@@ -549,17 +581,47 @@ class VideoTranslateApp(tk.Tk):
             is_clone = "clone" in voice.lower()
             if is_clone:
                 if self.custom_reference_audio and os.path.exists(self.custom_reference_audio):
-                    ref_sample_path = self.custom_reference_audio
+                    ext = os.path.splitext(self.custom_reference_audio)[1].lower()
+                    if ext in (".mp4", ".mov", ".mkv", ".webm", ".avi", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac"):
+                        ref_sample_path = os.path.join(self.output_folder, f"{base_name}_custom_speaker_sample.wav")
+                        ok = self.voxcpm_engine.extract_reference_clip(
+                            video_or_audio_path=self.custom_reference_audio,
+                            output_wav_path=ref_sample_path,
+                            start_sec=1.0,
+                            duration_sec=6.0
+                        )
+                        if not ok or not os.path.exists(ref_sample_path) or os.path.getsize(ref_sample_path) < 1000:
+                            self.voxcpm_engine.extract_reference_clip(
+                                video_or_audio_path=self.custom_reference_audio,
+                                output_wav_path=ref_sample_path,
+                                start_sec=0.0,
+                                duration_sec=6.0
+                            )
+                    else:
+                        ref_sample_path = self.custom_reference_audio
                 else:
                     self.update_progress_safe("Step 2.5/4: Extracting speaker sample from video for VoxCPM 2...", 45)
                     ref_sample_path = os.path.join(self.output_folder, f"{base_name}_speaker_sample.wav")
                     start_s = khmer_segments[0].start if khmer_segments else 1.0
-                    self.voxcpm_engine.extract_reference_clip(
+                    ok = self.voxcpm_engine.extract_reference_clip(
                         video_or_audio_path=filepath,
                         output_wav_path=ref_sample_path,
                         start_sec=start_s,
                         duration_sec=6.0
                     )
+                    if not ok or not os.path.exists(ref_sample_path) or os.path.getsize(ref_sample_path) < 1000:
+                        # Secondary attempt: start at 0.5s from start of video
+                        self.voxcpm_engine.extract_reference_clip(
+                            video_or_audio_path=filepath,
+                            output_wav_path=ref_sample_path,
+                            start_sec=0.5,
+                            duration_sec=6.0
+                        )
+
+                # Pre-initialize VoxCPM 2 model on GPU if not already loaded
+                if self.voxcpm_engine._model is None and self.voxcpm_engine.is_available:
+                    self.update_progress_safe("Step 2.8/4: Initializing VoxCPM 2 AI on RTX 5050 GPU...", 48)
+                    self.voxcpm_engine.load_model()
 
             # Step 3: Synthesize authentic Khmer voiceover SYNCHRONIZED IN REALTIME with video speech
             v_desc = "VoxCPM 2 Cloned" if is_clone else voice
