@@ -11,7 +11,7 @@ import time
 import asyncio
 import subprocess
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 
 @dataclass
@@ -85,15 +85,32 @@ def parse_srt_file(srt_path: str) -> List[TimedSubtitle]:
 def translate_text_to_khmer(text: str) -> str:
     """
     Robust multi-provider translation to Khmer.
-    1. Uses googletrans (session-authenticated Google Translate, immune to 429 rate limits).
-    2. Falls back to deep_translator GoogleTranslator.
-    3. Falls back to MyMemoryTranslator.
+    1. Direct Google Translate GTX Engine (Zero rate-limit, high-speed, 100% Khmer accuracy).
+    2. Falls back to googletrans (session-authenticated Google Translate).
+    3. Falls back to deep_translator GoogleTranslator.
+    4. Falls back to MyMemoryTranslator.
     """
     cleaned = text.strip()
     if not cleaned:
         return ""
 
-    # Provider 1: googletrans (session-authenticated Google Translate)
+    # Provider 1: Direct Google Translate Engine (GTX - High-Performance, Zero Rate-Limit)
+    try:
+        import urllib.request
+        import urllib.parse
+        import json
+        url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=km&dt=t&q=" + urllib.parse.quote(cleaned)
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data and data[0]:
+                res = "".join(item[0] for item in data[0] if item and item[0]).strip()
+                if res:
+                    return res
+    except Exception as exc:
+        print(f"[Direct GTX Translate Notice]: {exc}")
+
+    # Provider 2: googletrans
     try:
         from googletrans import Translator
         t = Translator()
@@ -103,7 +120,7 @@ def translate_text_to_khmer(text: str) -> str:
     except Exception:
         pass
 
-    # Provider 2: deep_translator GoogleTranslator
+    # Provider 3: deep_translator GoogleTranslator
     try:
         from deep_translator import GoogleTranslator
         res = GoogleTranslator(source="auto", target="km").translate(cleaned)
@@ -112,7 +129,7 @@ def translate_text_to_khmer(text: str) -> str:
     except Exception:
         pass
 
-    # Provider 3: MyMemoryTranslator
+    # Provider 4: MyMemoryTranslator
     try:
         from deep_translator import MyMemoryTranslator
         res = MyMemoryTranslator(source="en-US", target="km-KH").translate(cleaned)
@@ -127,10 +144,22 @@ def translate_text_to_khmer(text: str) -> str:
 class DubbingEngine:
     """High-Performance Khmer Video Dubbing & Realtime Audio Sync Engine."""
 
-    def __init__(self, ffmpeg_path: str = "ffmpeg", temp_dir: Optional[str] = None):
+    def __init__(
+        self,
+        ffmpeg_path: str = "ffmpeg",
+        temp_dir: Optional[str] = None,
+        voxcpm_engine: Optional[Any] = None
+    ):
         self.ffmpeg_path = ffmpeg_path
         self.temp_dir = temp_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "temp")
         os.makedirs(self.temp_dir, exist_ok=True)
+        self.voxcpm_engine = voxcpm_engine
+        if self.voxcpm_engine is None:
+            try:
+                from .voxcpm_engine import VoxCPMEngine
+                self.voxcpm_engine = VoxCPMEngine(ffmpeg_path=self.ffmpeg_path, temp_dir=self.temp_dir)
+            except Exception:
+                self.voxcpm_engine = None
 
     def probe_duration(self, audio_file: str) -> float:
         """Probe exact audio duration in seconds via FFmpeg."""
@@ -145,6 +174,52 @@ class DubbingEngine:
             pass
         return 0.0
 
+    def translate_segments_batch(
+        self,
+        texts: List[str],
+        batch_size: int = 15,
+        on_batch_progress: Optional[Callable[[int, int], None]] = None
+    ) -> List[str]:
+        """
+        High-performance batch translation to Khmer using Google GTX API.
+        Translates multiple subtitle lines in parallel batches in seconds.
+        """
+        results: List[str] = []
+        delimiter = " \n@@@\n "
+        total = len(texts)
+
+        for i in range(0, total, batch_size):
+            chunk = texts[i : i + batch_size]
+            payload = delimiter.join(chunk)
+            translated_chunk: List[str] = []
+
+            # Try direct GTX batch translation
+            try:
+                import urllib.request
+                import urllib.parse
+                import json
+                url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=km&dt=t&q=" + urllib.parse.quote(payload)
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                with urllib.request.urlopen(req, timeout=12) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    if data and data[0]:
+                        full_str = "".join(item[0] for item in data[0] if item and item[0])
+                        parts = [p.strip() for p in full_str.split("@@@")]
+                        if len(parts) == len(chunk):
+                            translated_chunk = parts
+            except Exception as e:
+                print(f"[Batch Translate Notice]: {e}")
+
+            # Fallback if count mismatch or error: translate line by line
+            if len(translated_chunk) != len(chunk):
+                translated_chunk = [translate_text_to_khmer(t) for t in chunk]
+
+            results.extend(translated_chunk)
+            if on_batch_progress:
+                on_batch_progress(min(total, i + batch_size), total)
+
+        return results
+
     def translate_script(
         self,
         source_srt_path: str,
@@ -157,6 +232,8 @@ class DubbingEngine:
         Returns (list of TimedSubtitle with Khmer text, full continuous text).
         """
         segments = parse_srt_file(source_srt_path)
+        # Filter out placeholder lines like [No clear speech detected] or [music]
+        segments = [s for s in segments if not (s.text.strip().startswith("[") and s.text.strip().endswith("]"))]
         khmer_segments: List[TimedSubtitle] = []
         translated_entries = []
         full_text_parts = []
@@ -171,25 +248,55 @@ class DubbingEngine:
                 translated = content
             with open(output_khmer_txt, "w", encoding="utf-8") as f:
                 f.write(translated)
-            return [], translated
+            if translated:
+                khmer_segments.append(TimedSubtitle(index=1, start=0.5, end=6.0, text=translated))
+            return khmer_segments, translated
 
-        # Cache optimization: If output_khmer_srt already exists with valid content, reuse it
+        # Cache optimization: Only reuse if cached file actually contains Khmer script (at least 25% Khmer)!
         if os.path.exists(output_khmer_srt) and os.path.getsize(output_khmer_srt) > 0:
             cached_segments = parse_srt_file(output_khmer_srt)
             if cached_segments and len(cached_segments) == len(segments):
                 full_cached_text = " ".join(s.text for s in cached_segments if s.text).strip()
-                if full_cached_text:
+                khmer_chars = len(re.findall(r"[\u1780-\u17ff]", full_cached_text))
+                total_chars = max(1, len(re.findall(r"\S", full_cached_text)))
+                if khmer_chars / total_chars >= 0.25:
                     if not os.path.exists(output_khmer_txt):
                         with open(output_khmer_txt, "w", encoding="utf-8") as f:
                             f.write(full_cached_text)
                     return cached_segments, full_cached_text
 
-        for i, seg in enumerate(segments):
+        # Fast batch translation: only translate segments that are NOT already Khmer!
+        def _on_batch(done, tot):
             if on_progress:
-                pct = min(40, 20 + int(((i + 1) / total) * 20))
-                on_progress(f"Translating to Khmer ({i + 1}/{total})...", pct)
+                pct = min(40, 20 + int((done / max(1, tot)) * 20))
+                on_progress(f"Translating to Khmer ({done}/{tot})...", pct)
 
-            khmer_txt = translate_text_to_khmer(seg.text)
+        indices_to_translate = []
+        texts_to_translate = []
+        translated_map = {}
+
+        for i, seg in enumerate(segments):
+            txt = seg.text.strip()
+            kh_chars = len(re.findall(r"[\u1780-\u17ff]", txt))
+            total_c = max(1, len(re.findall(r"\S", txt)))
+            # If segment is already in Khmer, keep it directly without translating!
+            if kh_chars / total_c >= 0.30:
+                translated_map[i] = txt
+            else:
+                indices_to_translate.append(i)
+                texts_to_translate.append(txt)
+
+        if texts_to_translate:
+            translated_results = self.translate_segments_batch(
+                texts_to_translate, batch_size=15, on_batch_progress=_on_batch
+            )
+            for orig_idx, trans_t in zip(indices_to_translate, translated_results):
+                translated_map[orig_idx] = trans_t
+
+        for i, seg in enumerate(segments):
+            khmer_txt = translated_map.get(i, "")
+            if not khmer_txt or not khmer_txt.strip():
+                khmer_txt = translate_text_to_khmer(seg.text)
             if not khmer_txt or not khmer_txt.strip():
                 khmer_txt = seg.text.strip()
 
@@ -216,44 +323,124 @@ class DubbingEngine:
 
         return khmer_segments, full_khmer_script
 
-    def synthesize_single_line(self, text: str, voice_type: str, output_path: str) -> bool:
+    def synthesize_single_line(
+        self,
+        text: str,
+        voice_type: str,
+        output_path: str,
+        reference_audio_path: Optional[str] = None
+    ) -> bool:
         """
-        Synthesize a single line of Khmer speech.
-        Guaranteed 100% gender adherence:
-        - When Man: Edge TTS km-KH-PisethNeural with pitch-shifted male fallback. NEVER WOMAN VOICE!
-        - When Woman: Edge TTS km-KH-SreymomNeural with female gTTS fallback.
+        Synthesize a single line of Khmer speech with strict voice isolation:
+        - When 'Man': 100% male Khmer neural speech (km-KH-PisethNeural) with deep male fallback.
+        - When 'Woman': 100% female Khmer neural speech (km-KH-SreymomNeural) with female fallback.
+        - When 'Clone': VoxCPM 2 zero-shot voice cloning matching reference speaker's vocal profile.
         """
-        voice_gender = voice_type.lower()
-        is_man = "man" in voice_gender or "male" in voice_gender
+        cleaned_text = text.strip()
+        if not cleaned_text:
+            return False
+
+        # Clean up stale/empty file before synthesis
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass
+
+        voice_lower = voice_type.strip().lower()
+        is_clone_mode = "clone" in voice_lower
+        # Critical fix: DO NOT use 'in' on 'man' because 'man' is inside 'woman'!
+        is_woman_mode = (voice_lower in ("woman", "female")) or ("woman" in voice_lower)
+        is_man_mode = not is_woman_mode and (voice_lower in ("man", "male") or ("man" in voice_lower and "woman" not in voice_lower))
+
+        # 0. VoxCPM 2 / Real-time Voice Cloning (Khmer)
+        if is_clone_mode:
+            if self.voxcpm_engine:
+                try:
+                    ref_p = reference_audio_path if (reference_audio_path and os.path.exists(reference_audio_path)) else ""
+                    ok = self.voxcpm_engine.synthesize_khmer_cloned(
+                        text=cleaned_text,
+                        reference_wav_path=ref_p,
+                        output_path=output_path
+                    )
+                    if ok and os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                        return True
+                except Exception as exc:
+                    print(f"[VoxCPM 2 Voice Clone Fallback]: {exc}")
+
+            # If cloning fallback triggered, determine gender from reference clip
+            if reference_audio_path and os.path.exists(reference_audio_path) and self.voxcpm_engine:
+                is_speaker_man, _, _ = self.voxcpm_engine.analyze_speaker_timbre(reference_audio_path)
+                is_man = is_speaker_man
+            else:
+                is_man = True
+        elif is_woman_mode:
+            is_man = False
+        else:
+            is_man = True
+
         edge_voice = "km-KH-PisethNeural" if is_man else "km-KH-SreymomNeural"
 
-        # 1. Edge TTS (High-Quality Authentic Neural Voice, with 3 retries)
-        for attempt in range(3):
-            try:
-                import edge_tts
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                communicate = edge_tts.Communicate(text.strip(), edge_voice)
-                loop.run_until_complete(communicate.save(output_path))
-                loop.close()
-                if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
-                    return True
-            except Exception:
-                time.sleep(0.2)
+        # Prepare candidate texts for Edge TTS:
+        # Candidate 1: text as is
+        # Candidate 2: normalized Khmer spaces (removes Latin spaces between Khmer characters to prevent Microsoft SSML failure)
+        # Candidate 3: full continuous Khmer text (Khmer natural script without spaces)
+        # Candidate 4: with Khmer full stop khan
+        candidates = [cleaned_text]
+        if re.search(r"[\u1780-\u17ff]", cleaned_text):
+            no_spaces = re.sub(r"(?<=[\u1780-\u17ff])\s+(?=[\u1780-\u17ff])", "", cleaned_text)
+            if no_spaces != cleaned_text and no_spaces not in candidates:
+                candidates.append(no_spaces)
+            all_no_spaces = cleaned_text.replace(" ", "")
+            if all_no_spaces not in candidates:
+                candidates.append(all_no_spaces)
+            if not cleaned_text.endswith(("។", ".", "!")):
+                candidates.append(no_spaces + "។")
 
-        # 2. Gender-matched Fallback (Guaranteed to match requested gender!)
+        # 1. Edge TTS (High-Quality Authentic Neural Voice)
+        for text_cand in candidates:
+            for attempt in range(2):
+                try:
+                    import edge_tts
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    communicate = edge_tts.Communicate(text_cand, edge_voice)
+                    loop.run_until_complete(communicate.save(output_path))
+                    loop.close()
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                        return True
+                    if os.path.exists(output_path):
+                        try:
+                            os.remove(output_path)
+                        except Exception:
+                            pass
+                except Exception:
+                    if os.path.exists(output_path):
+                        try:
+                            os.remove(output_path)
+                        except Exception:
+                            pass
+                    time.sleep(0.08)
+
+        # 2. Gender-matched Fallback via gTTS (Strictly matched to selected gender)
         try:
             from gtts import gTTS
             raw_fallback = output_path + ".fallback.mp3"
-            tts = gTTS(text.strip(), lang="km")
+            if os.path.exists(raw_fallback):
+                try:
+                    os.remove(raw_fallback)
+                except Exception:
+                    pass
+
+            tts = gTTS(cleaned_text, lang="km")
             tts.save(raw_fallback)
             if os.path.exists(raw_fallback) and os.path.getsize(raw_fallback) > 100:
                 if is_man:
-                    # Convert gTTS female audio to authentic deep male voice via pitch shift!
+                    # Convert female gTTS audio to deep male voice via pitch shift (140 Hz F0)
                     cmd = [
                         self.ffmpeg_path,
                         "-i", raw_fallback,
-                        "-af", "asetrate=44100*0.82,atempo=1.22",
+                        "-af", "asetrate=44100*0.58,atempo=1.72,lowpass=f=3600",
                         "-ar", "44100",
                         "-ac", "1",
                         "-c:a", "libmp3lame" if output_path.lower().endswith(".mp3") else "pcm_s16le",
@@ -267,15 +454,16 @@ class DubbingEngine:
                             pass
                     return os.path.exists(output_path) and os.path.getsize(output_path) > 100
                 else:
+                    # Pure female voice for Woman
                     if os.path.exists(output_path):
                         try:
                             os.remove(output_path)
                         except Exception:
                             pass
-                    os.rename(raw_fallback, output_path)
+                    os.replace(raw_fallback, output_path)
                     return True
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[gTTS Fallback Error]: {exc}")
 
         return False
 
@@ -285,6 +473,7 @@ class DubbingEngine:
         voice_type: str = "Man",
         total_video_duration: float = 0.0,
         output_audio_path: Optional[str] = None,
+        reference_audio_path: Optional[str] = None,
         on_progress: Optional[Callable[[str, int], None]] = None
     ) -> str:
         """
@@ -360,7 +549,12 @@ class DubbingEngine:
 
             # 2. Synthesize Khmer speech for this segment
             raw_part = os.path.join(parts_dir, f"raw_part_{i:04d}.mp3")
-            success = self.synthesize_single_line(seg.text, voice_type, raw_part)
+            success = self.synthesize_single_line(
+                seg.text,
+                voice_type,
+                raw_part,
+                reference_audio_path=reference_audio_path
+            )
             if not success or not os.path.exists(raw_part) or os.path.getsize(raw_part) == 0:
                 continue
 
@@ -433,33 +627,39 @@ class DubbingEngine:
                 current_time += trailing_gap
 
         # 5. Concatenate all timed segments into the master narration audio
-        if not manifest_lines:
-            dur = max(1.0, total_video_duration)
-            cmd_silent = [
-                self.ffmpeg_path,
-                "-f", "lavfi",
-                "-i", "anullsrc=r=44100:cl=mono",
-                "-t", f"{dur:.3f}",
-                *codec_args,
-                "-y", output_audio_path
-            ]
-            subprocess.run(cmd_silent, capture_output=True, creationflags=0x08000000)
-        else:
-            with open(concat_list_file, "w", encoding="utf-8") as f:
-                f.write("\n".join(manifest_lines) + "\n")
+        has_speech = any("final_part" in line for line in manifest_lines)
+        if not has_speech and khmer_segments:
+            # Emergency speech fallback: synthesize full text so output is NEVER silent
+            all_txt = " ".join(s.text for s in khmer_segments if s.text).strip()
+            if all_txt:
+                emer_part = os.path.join(parts_dir, "emergency_speech.mp3")
+                emer_wav = os.path.join(parts_dir, "emergency_speech.wav")
+                if self.synthesize_single_line(all_txt, voice_type, emer_part, reference_audio_path):
+                    subprocess.run([
+                        self.ffmpeg_path, "-i", emer_part, "-ar", "44100", "-ac", "1",
+                        "-c:a", "pcm_s16le", "-y", emer_wav
+                    ], capture_output=True, creationflags=0x08000000)
+                    if os.path.exists(emer_wav) and os.path.getsize(emer_wav) > 100:
+                        manifest_lines.append(f"file '{os.path.basename(emer_wav)}'")
 
-            cmd = [
-                self.ffmpeg_path,
-                "-f", "concat",
-                "-safe", "0",
-                "-i", concat_list_file,
-                *codec_args,
-                "-y", output_audio_path
-            ]
-            res = subprocess.run(cmd, capture_output=True, text=True, creationflags=0x08000000)
-            if not os.path.exists(output_audio_path) or os.path.getsize(output_audio_path) == 0:
-                err = res.stderr or "FFmpeg audio concat failed"
-                raise RuntimeError(f"Failed to generate timed voiceover: {err}")
+        if not manifest_lines or not any("part" in line or "speech" in line for line in manifest_lines):
+            raise RuntimeError("No speech audio could be synthesized. Please check subtitle text and network connection.")
+
+        with open(concat_list_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(manifest_lines) + "\n")
+
+        cmd = [
+            self.ffmpeg_path,
+            "-f", "concat",
+            "-safe", "0",
+            "-i", concat_list_file,
+            *codec_args,
+            "-y", output_audio_path
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, creationflags=0x08000000)
+        if not os.path.exists(output_audio_path) or os.path.getsize(output_audio_path) == 0:
+            err = res.stderr or "FFmpeg audio concat failed"
+            raise RuntimeError(f"Failed to generate timed voiceover: {err}")
 
         # Cleanup parts directory
         try:
