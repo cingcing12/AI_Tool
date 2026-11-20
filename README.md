@@ -7,6 +7,21 @@
 [![FFmpeg](https://img.shields.io/badge/Engine-FFmpeg-red.svg?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D6.svg?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-orange.svg)](LICENSE)
+[![GitHub Wiki](https://img.shields.io/badge/Wiki-Documentation-purple.svg?logo=gitbook&logoColor=white)](wiki/Home.md)
+
+---
+
+## 👥 University Team Assignment Roster
+
+| Member Name | Student ID | Core Project Role |
+| :--- | :--- | :--- |
+| **Eang Panha** | *Team Owner* | Project Lead & Lead System Architect |
+| **Vong Sokpheak** | `DUC-PG-A-2024146` | Core AI & Audio Synthesis Engineer (Dubbing Lead) |
+| **HIM Lihour** | `DUC-PG-A-...` | Speech Processing & NLP Engineer (STT Lead) |
+| **NOK Sreylinh** | `DUC-PG-A-2024052` | Frontend UI/UX Designer & Media Player Engineer |
+| **VEASNA REAKSA** | `DUC-PG-A-...` | DevOps, System Integration & QA Lead |
+
+> 📚 **Complete Project Wiki Documentation**: Explore the full [Wiki Documentation](wiki/Home.md) including the [Team RACI Matrix & Task Assignments](wiki/Team-Roles-&-Task-Assignments.md), [System Architecture & Pipeline](wiki/System-Architecture-&-Pipeline.md), [Sprint Milestones](wiki/Sprint-Planning-&-Milestones.md), and [User Manual](wiki/User-Manual-&-Testing-Guide.md).
 
 ---
 
