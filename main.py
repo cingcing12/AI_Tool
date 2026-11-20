@@ -110,10 +110,9 @@ class VideoTranslateApp(tk.Tk):
         # ==========================================
         # RIGHT COLUMN: Rounded Card for Controls
         # 1. Load: Pick and load video file (Top)
-        # 2. Extract Script (SRT): Generate subtitles with timestamps
-        # 3. Browse: Choose save/output location
-        # 4. Voice: Toggle Man / Woman
-        # 5. Start: Start dubbing process
+        # 2. Browse: Choose save/output location
+        # 3. Voice: Toggle Man / Woman / Clone
+        # 4. Start: Start automated dubbing (Auto-extracts SRT -> Translates -> Voices -> Merges)
         # ==========================================
         self.right_card = RoundedCard(
             content_frame,
@@ -147,20 +146,7 @@ class VideoTranslateApp(tk.Tk):
         )
         self.btn_load.pack(fill=tk.X, pady=(0, 8))
 
-        # Button 2: Extract Script (SRT Subtitles with Timestamps)
-        self.btn_extract_script = RoundedButton(
-            self.right_card.container,
-            text="Extract Script (SRT)",
-            command=self.extract_script,
-            bg_color="#7c3aed",
-            hover_color="#6d28d9",
-            text_color="#ffffff",
-            radius=12,
-            height=36
-        )
-        self.btn_extract_script.pack(fill=tk.X, pady=(0, 8))
-
-        # Button 3: Browse (Picks destination folder where outputs are saved)
+        # Button 2: Browse (Picks destination folder where outputs are saved)
         self.btn_browse = RoundedButton(
             self.right_card.container,
             text="Browse Output",
@@ -253,7 +239,6 @@ class VideoTranslateApp(tk.Tk):
     def _set_controls_state(self, state):
         """Enable or disable all control buttons safely."""
         self.btn_load.set_state(state)
-        self.btn_extract_script.set_state(state)
         self.btn_browse.set_state(state)
         self.btn_voice_toggle.set_state(state)
         self.btn_voice_sample.set_state(state)
@@ -314,80 +299,8 @@ class VideoTranslateApp(tk.Tk):
         self.player_view.load_video(selected_file)
         self.status_var.set("Ready")
 
-    def extract_script(self):
-        """Action 2 (Extract Script): Generate standard .srt subtitles from the video."""
-        filepath = self.video_path_var.get()
-        if not filepath:
-            messagebox.showwarning("Notice", "Please click 'Load Video' first!")
-            return
-
-        if self.is_processing:
-            messagebox.showinfo("In Progress", "Another task is already in progress.")
-            return
-
-        # Pause video playback if currently running
-        if hasattr(self, "player_view") and self.player_view.is_playing:
-            self.player_view.toggle_play_stop()
-
-        # Prepare destination .srt path
-        base_name = os.path.splitext(os.path.basename(filepath))[0]
-        output_srt_path = os.path.join(self.output_folder, f"{base_name}_subtitles.srt")
-
-        self.is_processing = True
-        self._set_controls_state(tk.DISABLED)
-        self.progress_bar.set_progress(0)
-        self.percent_label.config(text="0%")
-        self.status_var.set("Initializing speech recognition engine...")
-
-        thread = threading.Thread(
-            target=self._extract_script_worker,
-            args=(filepath, output_srt_path),
-            daemon=True
-        )
-        thread.start()
-
-    def _extract_script_worker(self, filepath, output_srt_path):
-        """Worker thread executing speech transcription into .srt file."""
-        def on_progress(msg, pct):
-            self.update_progress_safe(msg, pct)
-
-        try:
-            srt_content = self.script_extractor.extract_script_to_srt(
-                video_path=filepath,
-                output_srt_path=output_srt_path,
-                on_progress=on_progress
-            )
-
-            # Sample preview of first 6 subtitle lines
-            lines = [l for l in srt_content.strip().splitlines() if l.strip()]
-            preview_sample = "\n".join(lines[:6]) if lines else "No speech detected."
-
-            self.run_on_ui_thread(lambda p=output_srt_path, s=preview_sample: messagebox.showinfo(
-                "Script Extracted Successfully! 🎉",
-                f"Generated SubRip (.srt) subtitle file:\n\n"
-                f"Saved to:\n{p}\n\n"
-                f"Preview:\n{s}"
-            ))
-        except RuntimeError as re:
-            err_re = str(re)
-            self.update_progress_safe("Missing dependency", 0)
-            self.run_on_ui_thread(lambda m=err_re: messagebox.showerror(
-                "Missing Dependency",
-                m
-            ))
-        except Exception as exc:
-            err_exc = str(exc)
-            self.update_progress_safe(f"Extraction Error: {err_exc}", 0)
-            self.run_on_ui_thread(lambda m=err_exc: messagebox.showerror(
-                "Error",
-                f"Failed to extract script:\n{m}"
-            ))
-        finally:
-            self.is_processing = False
-            self.set_controls_state_safe(tk.NORMAL)
-
     def browse_output_folder(self):
-        """Action 3 (Browse): Select destination folder where outputs will be stored."""
+        """Action 2 (Browse): Select destination folder where outputs will be stored."""
         selected_dir = filedialog.askdirectory(
             title="Select Output Folder",
             initialdir=self.output_folder

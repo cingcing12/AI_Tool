@@ -422,49 +422,6 @@ class DubbingEngine:
                             pass
                     time.sleep(0.08)
 
-        # 2. Gender-matched Fallback via gTTS (Strictly matched to selected gender)
-        try:
-            from gtts import gTTS
-            raw_fallback = output_path + ".fallback.mp3"
-            if os.path.exists(raw_fallback):
-                try:
-                    os.remove(raw_fallback)
-                except Exception:
-                    pass
-
-            tts = gTTS(cleaned_text, lang="km")
-            tts.save(raw_fallback)
-            if os.path.exists(raw_fallback) and os.path.getsize(raw_fallback) > 100:
-                if is_man:
-                    # Convert female gTTS audio to deep male voice via pitch shift (140 Hz F0)
-                    cmd = [
-                        self.ffmpeg_path,
-                        "-i", raw_fallback,
-                        "-af", "asetrate=44100*0.58,atempo=1.72,lowpass=f=3600",
-                        "-ar", "44100",
-                        "-ac", "1",
-                        "-c:a", "libmp3lame" if output_path.lower().endswith(".mp3") else "pcm_s16le",
-                        "-y", output_path
-                    ]
-                    subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
-                    if os.path.exists(raw_fallback):
-                        try:
-                            os.remove(raw_fallback)
-                        except Exception:
-                            pass
-                    return os.path.exists(output_path) and os.path.getsize(output_path) > 100
-                else:
-                    # Pure female voice for Woman
-                    if os.path.exists(output_path):
-                        try:
-                            os.remove(output_path)
-                        except Exception:
-                            pass
-                    os.replace(raw_fallback, output_path)
-                    return True
-        except Exception as exc:
-            print(f"[gTTS Fallback Error]: {exc}")
-
         return False
 
     def generate_timed_voice(
@@ -518,6 +475,17 @@ class DubbingEngine:
             ]
             subprocess.run(cmd_silent, capture_output=True, creationflags=0x08000000)
             return output_audio_path
+
+        # Validate that Edge TTS is installed before starting synthesis
+        try:
+            import edge_tts
+        except ImportError:
+            if "clone" not in voice_type.lower():
+                raise RuntimeError(
+                    "Edge TTS is not installed!\n\n"
+                    "Please run in your terminal:\n"
+                    "python -m pip install edge-tts"
+                )
 
         for i, seg in enumerate(khmer_segments):
             if on_progress:

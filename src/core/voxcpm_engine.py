@@ -67,6 +67,57 @@ class VoxCPMEngine:
             pass
         return "cpu"
 
+    def _pure_python_pitch(self, wav_path: str) -> Tuple[bool, float, float]:
+        """
+        Zero-dependency autocorrelation pitch detector using Python standard library (wave + struct).
+        Guarantees accurate male/female detection and pitch ratio even without librosa/numpy.
+        """
+        import wave
+        import struct
+
+        try:
+            with wave.open(wav_path, "rb") as wf:
+                framerate = wf.getframerate()
+                sampwidth = wf.getsampwidth()
+                nchannels = wf.getnchannels()
+                nframes = min(framerate * 4, wf.getnframes())
+                raw = wf.readframes(nframes)
+                if sampwidth == 2:
+                    samples = struct.unpack(f"{len(raw)//2}h", raw)
+                    if nchannels > 1:
+                        samples = samples[::nchannels]
+                else:
+                    return (True, 125.0, 1.0)
+
+            if len(samples) < 1600:
+                return (True, 125.0, 1.0)
+
+            # Subsample to ~8000Hz for fast and robust pitch autocorrelation
+            step = max(1, framerate // 8000)
+            ds = samples[::step]
+            sr = framerate // step
+
+            min_lag = max(1, int(sr / 380))  # 380 Hz (high female / child voice)
+            max_lag = min(len(ds) - 1, int(sr / 65))   # 65 Hz (deep male voice)
+
+            best_corr = -1
+            best_lag = min_lag
+            window_size = min(2000, len(ds) - max_lag)
+
+            for lag in range(min_lag, max_lag):
+                corr = sum(ds[j] * ds[j + lag] for j in range(0, window_size, 2))
+                if corr > best_corr:
+                    best_corr = corr
+                    best_lag = lag
+
+            pitch = sr / max(1, best_lag)
+            is_man = pitch < 168.0
+            base_f0 = 125.0 if is_man else 220.0
+            ratio = max(0.68, min(1.42, pitch / base_f0))
+            return (is_man, float(pitch), float(ratio))
+        except Exception:
+            return (True, 125.0, 1.0)
+
     def analyze_speaker_timbre(self, reference_wav_path: str) -> Tuple[bool, float, float]:
         """
         Analyze reference voice sample to extract vocal profile:
@@ -79,50 +130,47 @@ class VoxCPMEngine:
         if reference_wav_path in self._reference_profile_cache:
             return self._reference_profile_cache[reference_wav_path]
 
+        # Convert to standard 16kHz mono WAV for analysis
+        temp_conv = os.path.join(self.temp_dir, f"probe_{int(time.time() * 1000)}.wav")
         try:
-            import librosa
-            import numpy as np
+            cmd = [
+                self.ffmpeg_path, "-i", reference_wav_path,
+                "-t", "8.0", "-ar", "16000", "-ac", "1",
+                "-c:a", "pcm_s16le", "-y", temp_conv
+            ]
+            subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
+            target_audio = temp_conv if (os.path.exists(temp_conv) and os.path.getsize(temp_conv) > 1000) else reference_wav_path
 
-            # Seamlessly handle any media format (.mp4, .mov, .mkv, .mp3, .ogg, .opus, .m4a, etc.)
-            ext = os.path.splitext(reference_wav_path)[1].lower()
-            if ext in (".mp4", ".mov", ".mkv", ".webm", ".avi", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus"):
-                temp_conv = os.path.join(self.temp_dir, f"probe_{int(time.time() * 1000)}.wav")
-                cmd = [
-                    self.ffmpeg_path, "-i", reference_wav_path,
-                    "-t", "8.0", "-ar", "16000", "-ac", "1",
-                    "-c:a", "pcm_s16le", "-y", temp_conv
-                ]
-                subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
-                target_audio = temp_conv if (os.path.exists(temp_conv) and os.path.getsize(temp_conv) > 1000) else reference_wav_path
-            else:
-                target_audio = reference_wav_path
+            # 1. Try high-precision librosa analysis if installed
+            try:
+                import librosa
+                import numpy as np
 
-            y, sr = librosa.load(target_audio, sr=16000, duration=8.0)
-            if target_audio != reference_wav_path and os.path.exists(target_audio):
-                try:
-                    os.remove(target_audio)
-                except Exception:
-                    pass
+                y, sr = librosa.load(target_audio, sr=16000, duration=8.0)
+                if len(y) >= 1600:
+                    f0 = librosa.yin(y, fmin=65, fmax=380)
+                    valid = f0[f0 > 0]
+                    if len(valid) > 0:
+                        mean_pitch = float(np.median(valid))
+                        is_man = mean_pitch < 168.0
+                        base_f0 = 125.0 if is_man else 220.0
+                        ratio = max(0.68, min(1.42, mean_pitch / base_f0))
+                        profile = (is_man, mean_pitch, ratio)
+                        self._reference_profile_cache[reference_wav_path] = profile
+                        return profile
+            except Exception:
+                pass
 
-            if len(y) < 1600:
-                return (True, 125.0, 1.0)
-
-            f0 = librosa.yin(y, fmin=65, fmax=380)
-            valid = f0[f0 > 0]
-            if len(valid) > 0:
-                mean_pitch = float(np.median(valid))
-            else:
-                mean_pitch = 140.0
-
-            is_man = mean_pitch < 168.0
-            base_f0 = 125.0 if is_man else 220.0
-            ratio = max(0.68, min(1.42, mean_pitch / base_f0))
-
-            profile = (is_man, mean_pitch, ratio)
+            # 2. Pure Python zero-dependency autocorrelation pitch detection
+            profile = self._pure_python_pitch(target_audio)
             self._reference_profile_cache[reference_wav_path] = profile
             return profile
-        except Exception:
-            return (True, 125.0, 1.0)
+        finally:
+            if os.path.exists(temp_conv):
+                try:
+                    os.remove(temp_conv)
+                except Exception:
+                    pass
 
     def load_model(
         self,
@@ -280,15 +328,6 @@ class VoxCPMEngine:
                         except Exception:
                             pass
                     time.sleep(0.08)
-
-        # Fallback to gTTS if edge-tts had network hiccup or English text
-        if not synthesized_with_edge:
-            try:
-                from gtts import gTTS
-                tts = gTTS(cleaned, lang="km")
-                tts.save(temp_base)
-            except Exception as exc:
-                print(f"[VoxCPM Cloner gTTS Fallback]: {exc}")
 
         if not os.path.exists(temp_base) or os.path.getsize(temp_base) <= 100:
             return False
