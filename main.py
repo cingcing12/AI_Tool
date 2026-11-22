@@ -9,7 +9,9 @@ import os
 import sys
 import time
 import queue
+import shutil
 import threading
+from typing import Optional
 import tkinter as tk
 from tkinter import filedialog, messagebox
 # Ensure src is in Python path
@@ -18,7 +20,7 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 from src.ui import RoundedCard, RoundedButton, RoundedProgressBar, YouTubePlayerView
-from src.core import VideoEngine, ScriptExtractor, DubbingEngine, VoxCPMEngine
+from src.core import VideoEngine, ScriptExtractor, DubbingEngine, VoxCPMEngine, WindowsAudioPlayer
 
 
 class VideoTranslateApp(tk.Tk):
@@ -44,6 +46,7 @@ class VideoTranslateApp(tk.Tk):
             temp_dir=self.engine.temp_dir,
             voxcpm_engine=self.voxcpm_engine
         )
+        self.sample_player = WindowsAudioPlayer()
 
         # Variables
         self.video_path_var = tk.StringVar(value="")
@@ -54,6 +57,15 @@ class VideoTranslateApp(tk.Tk):
         self.custom_reference_audio: Optional[str] = None
         self.status_var = tk.StringVar(value="Ready")
         self.is_processing = False
+        self._cancel_event = threading.Event()
+
+        # Review & Manual Save State
+        self.last_dubbed_video: Optional[str] = None
+        self.last_dubbed_srt: Optional[str] = None
+        self.last_dubbed_audio: Optional[str] = None
+        self.last_video_basename: str = ""
+        self.last_voice_tag: str = ""
+        self.original_video_path: Optional[str] = None
 
         # Thread-safe UI Task Queue (handles Python 3.15 background worker updates)
         self.ui_queue = queue.Queue()
@@ -69,6 +81,8 @@ class VideoTranslateApp(tk.Tk):
 
     def _on_close(self):
         """Ensure stream processes and audio player are closed gracefully."""
+        if self.is_processing:
+            self.cancel_processing()
         if hasattr(self, "player_view"):
             self.player_view.destroy()
         self.destroy()
@@ -176,7 +190,7 @@ class VideoTranslateApp(tk.Tk):
         self.btn_voice_sample = RoundedButton(
             self.right_card.container,
             text="Sample: Video Audio",
-            command=self.configure_clone_sample,
+            command=self.on_voice_sample_clicked,
             bg_color="#94a3b8",
             hover_color="#64748b",
             text_color="#ffffff",
@@ -184,6 +198,37 @@ class VideoTranslateApp(tk.Tk):
             height=32
         )
         self.btn_voice_sample.pack(fill=tk.X, pady=(0, 8))
+        self.btn_voice_sample.bind("<Button-3>", lambda e: self.configure_clone_sample())
+
+        # Button: Save Video (Manual save after review)
+        self.btn_save = RoundedButton(
+            self.right_card.container,
+            text="Save Video",
+            command=self.save_video,
+            bg_color="#059669",
+            hover_color="#047857",
+            text_color="#ffffff",
+            radius=12,
+            height=36,
+            font=("Segoe UI", 10, "bold")
+        )
+        self.btn_save.pack(fill=tk.X, pady=(0, 8))
+        self.btn_save.set_state(tk.DISABLED)
+
+        # Stop / Cancel Processing Button (At bottom)
+        self.btn_cancel = RoundedButton(
+            self.right_card.container,
+            text="Stop Processing",
+            command=self.cancel_processing,
+            bg_color="#ef4444",
+            hover_color="#dc2626",
+            text_color="#ffffff",
+            radius=12,
+            height=34,
+            font=("Segoe UI", 9, "bold")
+        )
+        self.btn_cancel.pack(fill=tk.X, side=tk.BOTTOM, pady=(4, 0))
+        self.btn_cancel.set_state(tk.DISABLED)
 
         # Button 5: Start Dubbing (Bottom position)
         self.btn_start = RoundedButton(
@@ -236,13 +281,42 @@ class VideoTranslateApp(tk.Tk):
         )
         self.progress_bar.pack(fill=tk.X)
 
+        # Pre-warm voice samples in a background thread for instant (0.001s) sample playback
+        def _prewarm_samples():
+            try:
+                temp_dir = self.engine.temp_dir
+                man_p = os.path.join(temp_dir, "sample_man.mp3")
+                wom_p = os.path.join(temp_dir, "sample_woman.mp3")
+                sample_text = "សួស្តីបងប្អូន នេះជាសំឡេងនិយាយភាសាខ្មែរ"
+                if not (os.path.exists(man_p) and os.path.getsize(man_p) > 100):
+                    self.dubbing_engine.synthesize_single_line(sample_text, "Man", man_p)
+                if not (os.path.exists(wom_p) and os.path.getsize(wom_p) > 100):
+                    self.dubbing_engine.synthesize_single_line(sample_text, "Woman", wom_p)
+            except Exception:
+                pass
+        threading.Thread(target=_prewarm_samples, daemon=True).start()
+
     def _set_controls_state(self, state):
-        """Enable or disable all control buttons safely."""
-        self.btn_load.set_state(state)
-        self.btn_browse.set_state(state)
-        self.btn_voice_toggle.set_state(state)
-        self.btn_voice_sample.set_state(state)
-        self.btn_start.set_state(state)
+        """Enable or disable control buttons safely based on processing state."""
+        if state == "processing":
+            self.btn_load.set_state(tk.DISABLED)
+            self.btn_browse.set_state(tk.DISABLED)
+            self.btn_voice_toggle.set_state(tk.DISABLED)
+            self.btn_voice_sample.set_state(tk.DISABLED)
+            self.btn_save.set_state(tk.DISABLED)
+            self.btn_start.set_state(tk.DISABLED)
+            self.btn_cancel.set_state(tk.NORMAL)
+            self.btn_cancel.set_text("Stop Processing")
+        else:
+            self.btn_load.set_state(tk.NORMAL)
+            self.btn_browse.set_state(tk.NORMAL)
+            self.btn_voice_toggle.set_state(tk.NORMAL)
+            self.btn_voice_sample.set_state(tk.NORMAL)
+            self.btn_start.set_state(tk.NORMAL)
+            self.btn_cancel.set_state(tk.DISABLED)
+            self.btn_cancel.set_text("Stop Processing")
+            has_preview = bool(self.last_dubbed_video and os.path.exists(self.last_dubbed_video))
+            self.btn_save.set_state(tk.NORMAL if has_preview else tk.DISABLED)
 
     def _poll_ui_queue(self):
         """Poll thread-safe UI task queue on Tkinter's main event loop."""
@@ -294,10 +368,83 @@ class VideoTranslateApp(tk.Tk):
             return
 
         self.video_path_var.set(selected_file)
+        self.original_video_path = selected_file
+        self.last_dubbed_video = None
+        self.last_dubbed_srt = None
+        self.last_dubbed_audio = None
+        self.btn_save.set_state(tk.DISABLED)
 
         # Load video and extract first frame via VideoEngine
         self.player_view.load_video(selected_file)
         self.status_var.set("Ready")
+
+    def save_video(self):
+        """Action: Manually save the reviewed dubbed video to a chosen destination."""
+        if not self.last_dubbed_video or not os.path.exists(self.last_dubbed_video):
+            messagebox.showwarning(
+                "Notice",
+                "No dubbed video ready to save.\n\n"
+                "Please click 'Start Dubbing' to generate a dubbed video preview first!"
+            )
+            return
+
+        default_name = f"{self.last_video_basename}_dubbed_{self.last_voice_tag}.mp4"
+        save_dest = filedialog.asksaveasfilename(
+            title="Save Dubbed Video",
+            initialdir=self.output_folder,
+            initialfile=default_name,
+            filetypes=[
+                ("MP4 Video", "*.mp4"),
+                ("MKV Video", "*.mkv"),
+                ("All Files", "*.*")
+            ],
+            defaultextension=".mp4"
+        )
+        if not save_dest:
+            return
+
+        try:
+            # 1. Copy dubbed video to chosen location
+            shutil.copy2(self.last_dubbed_video, save_dest)
+            dest_dir = os.path.dirname(os.path.abspath(save_dest))
+            dest_base = os.path.splitext(os.path.basename(save_dest))[0]
+            self.output_folder = dest_dir
+
+            # 2. Also save Khmer subtitles alongside video if available
+            saved_extra = []
+            if self.last_dubbed_srt and os.path.exists(self.last_dubbed_srt):
+                srt_dest = os.path.join(dest_dir, f"{dest_base}_khmer.srt")
+                shutil.copy2(self.last_dubbed_srt, srt_dest)
+                saved_extra.append(f"📝 Subtitles: {os.path.basename(srt_dest)}")
+
+            # 3. Also save Khmer audio track alongside video if available
+            if self.last_dubbed_audio and os.path.exists(self.last_dubbed_audio):
+                ext = os.path.splitext(self.last_dubbed_audio)[1] or ".mp3"
+                audio_dest = os.path.join(dest_dir, f"{dest_base}_khmer{ext}")
+                shutil.copy2(self.last_dubbed_audio, audio_dest)
+                saved_extra.append(f"🔊 Audio: {os.path.basename(audio_dest)}")
+
+            self.status_var.set(f"Saved: {os.path.basename(save_dest)}")
+            extra_msg = ("\n" + "\n".join(saved_extra)) if saved_extra else ""
+            messagebox.showinfo(
+                "Saved Successfully! 🎉",
+                f"Dubbed video was successfully saved to:\n\n{save_dest}\n{extra_msg}"
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Save Error",
+                f"Failed to save video:\n{exc}"
+            )
+
+    def cancel_processing(self):
+        """Action: Cancel or stop currently running dubbing processing."""
+        if not self.is_processing:
+            return
+
+        self.status_var.set("Cancelling dubbing...")
+        self._cancel_event.set()
+        self.btn_cancel.set_text("Stopping...")
+        self.btn_cancel.set_state(tk.DISABLED)
 
     def browse_output_folder(self):
         """Action 2 (Browse): Select destination folder where outputs will be stored."""
@@ -340,6 +487,48 @@ class VideoTranslateApp(tk.Tk):
         else:
             self.voice_type = "Man"
         self._update_voice_ui()
+
+    def on_voice_sample_clicked(self):
+        """Action 4b: Handle click on Voice Sample button (instant audio preview)."""
+        if self.voice_type == "Clone":
+            if self.custom_reference_audio and os.path.exists(self.custom_reference_audio):
+                self.status_var.set(f"Playing Clone Sample: {os.path.basename(self.custom_reference_audio)} 🔊")
+                self.sample_player.play(self.custom_reference_audio)
+            elif self.video_path_var.get() and os.path.exists(self.video_path_var.get()):
+                base_name = os.path.splitext(os.path.basename(self.video_path_var.get()))[0]
+                preview_dir = os.path.join(self.engine.temp_dir, "dubbing_preview")
+                ref_p = os.path.join(preview_dir, f"{base_name}_speaker_sample.wav")
+                if not (os.path.exists(ref_p) and os.path.getsize(ref_p) > 1000):
+                    self.status_var.set("Extracting speaker audio from video...")
+                    self.voxcpm_engine.extract_reference_clip(self.video_path_var.get(), ref_p, start_sec=1.0, duration_sec=5.0)
+                if os.path.exists(ref_p) and os.path.getsize(ref_p) > 1000:
+                    self.status_var.set("Playing Video Speaker Sample 🔊")
+                    self.sample_player.play(ref_p)
+                else:
+                    self.configure_clone_sample()
+            else:
+                self.configure_clone_sample()
+        else:
+            self.preview_current_voice_sample()
+
+    def preview_current_voice_sample(self):
+        """Play a fast, high-quality audio preview of the selected Khmer voice (Man / Woman)."""
+        sample_path = os.path.join(self.engine.temp_dir, f"sample_{self.voice_type.lower()}.mp3")
+
+        def _play():
+            try:
+                if not os.path.exists(sample_path) or os.path.getsize(sample_path) < 100:
+                    self.status_var.set(f"Generating {self.voice_type} voice sample...")
+                    sample_text = "សួស្តីបងប្អូន នេះជាសំឡេងនិយាយភាសាខ្មែរ"
+                    self.dubbing_engine.synthesize_single_line(sample_text, self.voice_type, sample_path)
+
+                if os.path.exists(sample_path) and os.path.getsize(sample_path) > 100:
+                    self.status_var.set(f"Playing {self.voice_type} voice sample 🔊")
+                    self.sample_player.play(sample_path)
+            except Exception as e:
+                self.status_var.set(f"Preview notice: {e}")
+
+        threading.Thread(target=_play, daemon=True).start()
 
     def configure_clone_sample(self):
         """Configure reference voice sample for VoxCPM 2 cloning."""
@@ -390,7 +579,7 @@ class VideoTranslateApp(tk.Tk):
                 self._update_voice_ui()
 
     def start_dubbing(self):
-        """Action 5 (Start): Start dubbing and save output to the destination folder."""
+        """Action 5 (Start): Start dubbing to preview. Does not auto-save to output folder."""
         filepath = self.video_path_var.get()
         if not filepath:
             messagebox.showwarning("Notice", "Please click 'Load Video' first!")
@@ -405,37 +594,68 @@ class VideoTranslateApp(tk.Tk):
             self.player_view.toggle_play_stop()
 
         self.is_processing = True
-        self._set_controls_state(tk.DISABLED)
+        self._cancel_event.clear()
+        self._set_controls_state("processing")
 
         self.progress_bar.set_progress(0)
         self.percent_label.config(text="0%")
+        self.status_var.set("Starting dubbing...")
 
-        # Target output filename
+        # Preview working directory in temp (NO auto-save to permanent folder)
         base_name = os.path.splitext(os.path.basename(filepath))[0]
         voice_tag = "cloned" if "clone" in self.voice_type.lower() else self.voice_type.lower()
-        output_filename = f"{base_name}_dubbed_{voice_tag}.mp4"
-        output_full_path = os.path.join(self.output_folder, output_filename)
+        preview_dir = os.path.join(self.engine.temp_dir, "dubbing_preview")
+        os.makedirs(preview_dir, exist_ok=True)
+
+        preview_video_path = os.path.join(preview_dir, f"{base_name}_preview_{voice_tag}.mp4")
+        preview_srt_path = os.path.join(preview_dir, f"{base_name}_khmer.srt")
+        preview_audio_path = os.path.join(preview_dir, f"{base_name}_khmer_{voice_tag}.mp3")
+        preview_txt_path = os.path.join(preview_dir, f"{base_name}_khmer.txt")
+        source_srt_path = os.path.join(preview_dir, f"{base_name}_subtitles.srt")
 
         thread = threading.Thread(
             target=self._dubbing_worker,
-            args=(filepath, self.voice_type, output_full_path),
+            args=(
+                filepath,
+                self.voice_type,
+                preview_dir,
+                preview_video_path,
+                preview_srt_path,
+                preview_audio_path,
+                preview_txt_path,
+                source_srt_path
+            ),
             daemon=True
         )
         thread.start()
 
-    def _dubbing_worker(self, filepath, voice, output_path):
-        """Worker thread executing end-to-end Khmer dubbing pipeline."""
+    def _dubbing_worker(
+        self,
+        filepath,
+        voice,
+        preview_dir,
+        preview_video_path,
+        preview_srt_path,
+        preview_audio_path,
+        preview_txt_path,
+        source_srt_path
+    ):
+        """Worker thread executing end-to-end Khmer dubbing pipeline with cancellation and preview review."""
         base_name = os.path.splitext(os.path.basename(filepath))[0]
         voice_tag = "cloned" if "clone" in voice.lower() else voice.lower()
-        source_srt_path = os.path.join(self.output_folder, f"{base_name}_subtitles.srt")
-        khmer_srt_path = os.path.join(self.output_folder, f"{base_name}_khmer.srt")
-        khmer_txt_path = os.path.join(self.output_folder, f"{base_name}_khmer.txt")
-        khmer_audio_path = os.path.join(self.output_folder, f"{base_name}_khmer_{voice_tag}.mp3")
+
+        def cancel_check():
+            return self._cancel_event.is_set()
 
         def on_progress(msg, pct):
+            if cancel_check():
+                raise InterruptedError("Dubbing cancelled by user.")
             self.update_progress_safe(msg, pct)
 
         try:
+            if cancel_check():
+                raise InterruptedError("Dubbing cancelled by user.")
+
             # Step 1: Ensure source script is extracted and contains valid content
             needs_extraction = True
             if os.path.exists(source_srt_path):
@@ -446,26 +666,49 @@ class VideoTranslateApp(tk.Tk):
                         p.text and len(p.text.strip()) > 1 and not (p.text.strip().startswith("[") and p.text.strip().endswith("]"))
                         for p in parsed_test
                     ):
-                        needs_extraction = False
+                        # Detect if the existing SRT was created with coarse 5s/7s sliding windows from SpeechRecognition
+                        is_coarse_chunked = len(parsed_test) >= 2 and all((s.end - s.start) in (5.0, 7.0) for s in parsed_test[:4])
+                        if is_coarse_chunked and self.script_extractor.get_available_engine() in ("openai-whisper", "faster-whisper"):
+                            needs_extraction = True
+                        else:
+                            needs_extraction = False
                 except Exception:
                     needs_extraction = True
 
             if needs_extraction:
-                self.update_progress_safe("Step 1/4: Extracting spoken script from video...", 10)
+                if os.path.exists(preview_srt_path):
+                    try:
+                        os.remove(preview_srt_path)
+                    except Exception:
+                        pass
+                if os.path.exists(preview_txt_path):
+                    try:
+                        os.remove(preview_txt_path)
+                    except Exception:
+                        pass
+                self.update_progress_safe("Step 1/4: Extracting spoken script with high-precision Whisper...", 10)
                 self.script_extractor.extract_script_to_srt(
                     video_path=filepath,
                     output_srt_path=source_srt_path,
-                    on_progress=lambda m, p: self.update_progress_safe(f"Step 1/4: {m}", min(25, int(p * 0.25)))
+                    on_progress=lambda m, p: on_progress(f"Step 1/4: {m}", min(25, int(p * 0.25))),
+                    cancel_check=cancel_check
                 )
+
+            if cancel_check():
+                raise InterruptedError("Dubbing cancelled by user.")
 
             # Step 2: Translate script to Khmer
             self.update_progress_safe("Step 2/4: Translating subtitles to Khmer...", 30)
             khmer_segments, full_khmer_script = self.dubbing_engine.translate_script(
                 source_srt_path=source_srt_path,
-                output_khmer_srt=khmer_srt_path,
-                output_khmer_txt=khmer_txt_path,
-                on_progress=on_progress
+                output_khmer_srt=preview_srt_path,
+                output_khmer_txt=preview_txt_path,
+                on_progress=on_progress,
+                cancel_check=cancel_check
             )
+
+            if cancel_check():
+                raise InterruptedError("Dubbing cancelled by user.")
 
             # If existing SRT on disk was empty or stale, re-extract fresh script
             if not full_khmer_script or not full_khmer_script.strip():
@@ -473,17 +716,24 @@ class VideoTranslateApp(tk.Tk):
                 self.script_extractor.extract_script_to_srt(
                     video_path=filepath,
                     output_srt_path=source_srt_path,
-                    on_progress=lambda m, p: self.update_progress_safe(f"Step 1/4: {m}", min(25, int(p * 0.25)))
+                    on_progress=lambda m, p: on_progress(f"Step 1/4: {m}", min(25, int(p * 0.25))),
+                    cancel_check=cancel_check
                 )
+                if cancel_check():
+                    raise InterruptedError("Dubbing cancelled by user.")
                 khmer_segments, full_khmer_script = self.dubbing_engine.translate_script(
                     source_srt_path=source_srt_path,
-                    output_khmer_srt=khmer_srt_path,
-                    output_khmer_txt=khmer_txt_path,
-                    on_progress=on_progress
+                    output_khmer_srt=preview_srt_path,
+                    output_khmer_txt=preview_txt_path,
+                    on_progress=on_progress,
+                    cancel_check=cancel_check
                 )
 
             if not full_khmer_script or not full_khmer_script.strip():
                 raise RuntimeError("No dialogue or speech could be recognized from the video to dub! Please make sure the video has audible speech.")
+
+            if cancel_check():
+                raise InterruptedError("Dubbing cancelled by user.")
 
             # Probe exact video duration for precision timeline alignment
             meta = self.engine.probe_video_metadata(filepath)
@@ -496,45 +746,40 @@ class VideoTranslateApp(tk.Tk):
                 if self.custom_reference_audio and os.path.exists(self.custom_reference_audio):
                     ext = os.path.splitext(self.custom_reference_audio)[1].lower()
                     if ext in (".mp4", ".mov", ".mkv", ".webm", ".avi", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac"):
-                        ref_sample_path = os.path.join(self.output_folder, f"{base_name}_custom_speaker_sample.wav")
-                        ok = self.voxcpm_engine.extract_reference_clip(
-                            video_or_audio_path=self.custom_reference_audio,
-                            output_wav_path=ref_sample_path,
-                            start_sec=1.0,
-                            duration_sec=6.0
-                        )
-                        if not ok or not os.path.exists(ref_sample_path) or os.path.getsize(ref_sample_path) < 1000:
+                        ref_sample_path = os.path.join(preview_dir, f"{base_name}_custom_speaker_sample.wav")
+                        if not (os.path.exists(ref_sample_path) and os.path.getsize(ref_sample_path) > 1000):
                             self.voxcpm_engine.extract_reference_clip(
                                 video_or_audio_path=self.custom_reference_audio,
                                 output_wav_path=ref_sample_path,
                                 start_sec=0.0,
-                                duration_sec=6.0
+                                duration_sec=6.0,
+                                cancel_check=cancel_check
                             )
                     else:
                         ref_sample_path = self.custom_reference_audio
                 else:
-                    self.update_progress_safe("Step 2.5/4: Extracting speaker sample from video for VoxCPM 2...", 45)
-                    ref_sample_path = os.path.join(self.output_folder, f"{base_name}_speaker_sample.wav")
-                    start_s = khmer_segments[0].start if khmer_segments else 1.0
-                    ok = self.voxcpm_engine.extract_reference_clip(
-                        video_or_audio_path=filepath,
-                        output_wav_path=ref_sample_path,
-                        start_sec=start_s,
-                        duration_sec=6.0
-                    )
-                    if not ok or not os.path.exists(ref_sample_path) or os.path.getsize(ref_sample_path) < 1000:
-                        # Secondary attempt: start at 0.5s from start of video
+                    ref_sample_path = os.path.join(preview_dir, f"{base_name}_speaker_sample.wav")
+                    if not (os.path.exists(ref_sample_path) and os.path.getsize(ref_sample_path) > 1000):
+                        self.update_progress_safe("Step 2.5/4: Extracting speaker sample from video for VoxCPM 2...", 45)
+                        start_s = khmer_segments[0].start if khmer_segments else 1.0
                         self.voxcpm_engine.extract_reference_clip(
                             video_or_audio_path=filepath,
                             output_wav_path=ref_sample_path,
-                            start_sec=0.5,
-                            duration_sec=6.0
+                            start_sec=start_s,
+                            duration_sec=6.0,
+                            cancel_check=cancel_check
                         )
+
+                if cancel_check():
+                    raise InterruptedError("Dubbing cancelled by user.")
 
                 # Pre-initialize VoxCPM 2 model on GPU if not already loaded
                 if self.voxcpm_engine._model is None and self.voxcpm_engine.is_available:
                     self.update_progress_safe("Step 2.8/4: Initializing VoxCPM 2 AI on RTX 5050 GPU...", 48)
                     self.voxcpm_engine.load_model()
+
+            if cancel_check():
+                raise InterruptedError("Dubbing cancelled by user.")
 
             # Step 3: Synthesize authentic Khmer voiceover SYNCHRONIZED IN REALTIME with video speech
             v_desc = "VoxCPM 2 Cloned" if is_clone else voice
@@ -543,44 +788,75 @@ class VideoTranslateApp(tk.Tk):
                 khmer_segments=khmer_segments,
                 voice_type=voice,
                 total_video_duration=video_duration,
-                output_audio_path=khmer_audio_path,
+                output_audio_path=preview_audio_path,
                 reference_audio_path=ref_sample_path,
-                on_progress=on_progress
+                on_progress=on_progress,
+                cancel_check=cancel_check
             )
+
+            if cancel_check():
+                raise InterruptedError("Dubbing cancelled by user.")
 
             # Step 4: Merge Khmer voice into video and REMOVE 100% of the original sound
             self.update_progress_safe("Step 4/4: Replacing original audio with pure Khmer voice...", 85)
             self.dubbing_engine.merge_video(
                 video_path=filepath,
                 audio_path=generated_audio,
-                output_video_path=output_path,
+                output_video_path=preview_video_path,
                 remove_original_sound=True,
                 background_volume=0.0,
-                on_progress=on_progress
+                on_progress=on_progress,
+                cancel_check=cancel_check
             )
 
-            self.update_progress_safe("Dubbing Complete! 🎉", 100)
+            if cancel_check():
+                raise InterruptedError("Dubbing cancelled by user.")
 
-            # Prompt success with details and auto-load dubbed video for instant preview
+            # Save preview references (NOT auto-saved into user's output directory!)
+            self.last_dubbed_video = preview_video_path
+            self.last_dubbed_srt = preview_srt_path
+            self.last_dubbed_audio = generated_audio
+            self.last_video_basename = base_name
+            self.last_voice_tag = voice_tag
+
+            self.update_progress_safe("Dubbing Complete! Ready for review 🎉", 100)
+
+            # Prompt success with details and auto-load dubbed video for instant preview review
             def _on_success():
                 try:
-                    self.player_view.load_video(output_path)
-                    self.video_path_var.set(output_path)
+                    self.player_view.load_video(preview_video_path)
+                    self.video_path_var.set(preview_video_path)
                 except Exception:
                     pass
+
+                self.btn_save.set_state(tk.NORMAL)
+                self.btn_save.set_colors("#059669", "#047857")
+                self.status_var.set("Dubbing ready for review! Click Play to watch, then click 'Save Video' to save.")
+
                 desc = "VoxCPM 2 Cloned Voice" if is_clone else f"{voice} voice"
                 sample_info = f"\n🎙️ Speaker Reference Clip:\n{ref_sample_path}\n" if is_clone and ref_sample_path else ""
                 messagebox.showinfo(
-                    "Dubbing Complete! 🎉",
+                    "Dubbing Ready for Review! 🎉",
                     f"Video successfully dubbed in Khmer ({desc})!\n\n"
-                    f"🎬 Output Video:\n{output_path}\n\n"
-                    f"🔊 Khmer Audio:\n{khmer_audio_path}\n"
+                    f"🎬 The dubbed video is now loaded in the player.\n"
+                    f"▶ Click Play to review the video and listen to the dubbed voice.\n"
                     f"{sample_info}\n"
-                    f"📝 Khmer Subtitles:\n{khmer_srt_path}\n\n"
-                    f"The dubbed video is loaded in the player. Click Play to watch!"
+                    f"💾 It is NOT auto-saved yet! When you are satisfied, click 'Save Video' to save it to your computer."
                 )
 
             self.run_on_ui_thread(_on_success)
+        except InterruptedError:
+            self.update_progress_safe("Dubbing was cancelled.", 0)
+            def _on_cancelled():
+                self.status_var.set("Dubbing was cancelled by user.")
+                # Clean up incomplete preview files
+                for f in (preview_video_path, preview_audio_path):
+                    if os.path.exists(f):
+                        try:
+                            os.remove(f)
+                        except Exception:
+                            pass
+            self.run_on_ui_thread(_on_cancelled)
         except Exception as e:
             self.update_progress_safe(f"Error: {e}", 0)
             self.run_on_ui_thread(lambda err=e: messagebox.showerror(

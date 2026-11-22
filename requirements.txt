@@ -3,7 +3,7 @@
 
 SpeechRecognition>=3.10.0
 imageio-ffmpeg>=0.4.9
-edge-tts>=7.0.0
+edge-tts>=7.3.1
 deep-translator>=1.11.4
 voxcpm>=2.0.0
 soundfile>=0.12.0

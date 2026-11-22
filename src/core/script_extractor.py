@@ -129,8 +129,14 @@ class ScriptExtractor:
             import faster_whisper
             from faster_whisper import WhisperModel
             return "faster-whisper"
-        except (ImportError, OSError, Exception) as exc:
-            print(f"[ScriptExtractor] faster-whisper unavailable ({exc}), using SpeechRecognition.")
+        except (ImportError, OSError, Exception):
+            pass
+
+        try:
+            import whisper
+            return "openai-whisper"
+        except (ImportError, OSError, Exception):
+            pass
 
         try:
             import speech_recognition
@@ -186,13 +192,17 @@ class ScriptExtractor:
         video_path: str,
         output_srt_path: Optional[str] = None,
         language: Optional[str] = None,
-        on_progress: Optional[Callable[[str, int], None]] = None
+        on_progress: Optional[Callable[[str, int], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None
     ) -> str:
         """
         Extract spoken script from video and format into a standard SubRip (.srt) subtitle file.
         """
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
+
+        if cancel_check and cancel_check():
+            raise InterruptedError("Script extraction cancelled before execution.")
 
         engine = self.get_available_engine()
         if engine == "none":
@@ -209,11 +219,11 @@ class ScriptExtractor:
 
         # Step 1: Extract speech-enhanced 16kHz audio track
         temp_wav = os.path.join(ve.temp_dir, f"transcribe_{int(time.time())}.wav")
-        extracted_wav = ve.extract_audio(video_path, temp_wav, enhance_speech=True)
+        extracted_wav = ve.extract_audio(video_path, temp_wav, enhance_speech=True, cancel_check=cancel_check)
 
         # Fallback to standard extraction if filter failed
         if not extracted_wav or not os.path.exists(extracted_wav) or os.path.getsize(extracted_wav) == 0:
-            extracted_wav = ve.extract_audio(video_path, temp_wav, enhance_speech=False)
+            extracted_wav = ve.extract_audio(video_path, temp_wav, enhance_speech=False, cancel_check=cancel_check)
 
         if not extracted_wav or not os.path.exists(extracted_wav) or os.path.getsize(extracted_wav) == 0:
             raise RuntimeError(
@@ -223,13 +233,29 @@ class ScriptExtractor:
 
         srt_content = ""
         try:
+            if cancel_check and cancel_check():
+                raise InterruptedError("Script extraction cancelled.")
+
             if engine == "faster-whisper":
                 try:
                     srt_content = self._transcribe_faster_whisper(
-                        extracted_wav, language, on_progress
+                        extracted_wav, language, on_progress, cancel_check=cancel_check
                     )
+                except InterruptedError:
+                    raise
                 except (OSError, Exception) as whisper_err:
-                    print(f"[Whisper Warning]: {whisper_err}. Falling back to SpeechRecognition.")
+                    print(f"[Faster-Whisper Warning]: {whisper_err}. Trying OpenAI Whisper.")
+                    srt_content = ""
+
+            if not srt_content and engine in ("openai-whisper", "faster-whisper"):
+                try:
+                    srt_content = self._transcribe_openai_whisper(
+                        extracted_wav, language, on_progress, cancel_check=cancel_check
+                    )
+                except InterruptedError:
+                    raise
+                except Exception as o_err:
+                    print(f"[OpenAI-Whisper Warning]: {o_err}. Falling back to SpeechRecognition.")
                     srt_content = ""
 
             # Check if Whisper produced a meaningful transcript
@@ -242,10 +268,12 @@ class ScriptExtractor:
                     has_valid_speech = True
 
             if not has_valid_speech:
+                if cancel_check and cancel_check():
+                    raise InterruptedError("Script extraction cancelled.")
                 if on_progress:
                     on_progress("Enhancing transcript with SpeechRecognition (Khmer/Auto)...", 30)
                 srt_content = self._transcribe_speech_recognition(
-                    extracted_wav, video_path, ve, language, on_progress
+                    extracted_wav, video_path, ve, language, on_progress, cancel_check=cancel_check
                 )
         finally:
             if temp_wav and os.path.exists(temp_wav):
@@ -278,13 +306,20 @@ class ScriptExtractor:
         self,
         audio_path: str,
         language: Optional[str],
-        on_progress: Optional[Callable[[str, int], None]]
+        on_progress: Optional[Callable[[str, int], None]],
+        cancel_check: Optional[Callable[[], bool]] = None
     ) -> str:
         """Transcription via faster-whisper offline engine."""
+        if cancel_check and cancel_check():
+            raise InterruptedError("Transcription cancelled.")
+
         if on_progress:
             on_progress("Loading faster-whisper AI model...", 25)
 
         model = self._get_whisper_model()
+
+        if cancel_check and cancel_check():
+            raise InterruptedError("Transcription cancelled.")
 
         if on_progress:
             on_progress("Transcribing audio into subtitles (.srt)...", 35)
@@ -302,6 +337,8 @@ class ScriptExtractor:
         index = 1
 
         for segment in segments:
+            if cancel_check and cancel_check():
+                raise InterruptedError("Transcription cancelled by user.")
             text = segment.text.strip()
             if not text:
                 continue
@@ -316,13 +353,63 @@ class ScriptExtractor:
 
         return "\n".join(srt_entries)
 
+    def _transcribe_openai_whisper(
+        self,
+        audio_path: str,
+        language: Optional[str],
+        on_progress: Optional[Callable[[str, int], None]],
+        cancel_check: Optional[Callable[[], bool]] = None
+    ) -> str:
+        """Transcription via official OpenAI Whisper offline engine with precision timestamps."""
+        if cancel_check and cancel_check():
+            raise InterruptedError("Transcription cancelled.")
+
+        if on_progress:
+            on_progress("Loading OpenAI Whisper AI model...", 25)
+
+        import whisper
+        target_model = self.model_size if self.model_size in ("tiny", "base", "small", "medium") else "base"
+        model = whisper.load_model(target_model)
+
+        if cancel_check and cancel_check():
+            raise InterruptedError("Transcription cancelled.")
+
+        if on_progress:
+            on_progress("Transcribing audio into precision subtitles (.srt)...", 35)
+
+        kwargs = {"fp16": False}
+        if language and language not in ("auto", "none"):
+            kwargs["language"] = language
+
+        result = model.transcribe(audio_path, **kwargs)
+
+        if cancel_check and cancel_check():
+            raise InterruptedError("Transcription cancelled by user.")
+
+        segments = result.get("segments", [])
+        srt_entries: List[str] = []
+        for idx, segment in enumerate(segments, 1):
+            if cancel_check and cancel_check():
+                raise InterruptedError("Transcription cancelled by user.")
+            text = segment.get("text", "").strip()
+            if not text:
+                continue
+            start_s = float(segment.get("start", 0.0))
+            end_s = float(segment.get("end", start_s + 1.0))
+            start_str = seconds_to_srt_timestamp(start_s)
+            end_str = seconds_to_srt_timestamp(end_s)
+            srt_entries.append(f"{idx}\n{start_str} --> {end_str}\n{text}\n")
+
+        return "\n".join(srt_entries)
+
     def _transcribe_speech_recognition(
         self,
         audio_path: str,
         video_path: str,
         video_engine,
         language: Optional[str],
-        on_progress: Optional[Callable[[str, int], None]]
+        on_progress: Optional[Callable[[str, int], None]],
+        cancel_check: Optional[Callable[[], bool]] = None
     ) -> str:
         """
         Pure-Python Speech Recognition using SpeechRecognition library.
@@ -330,6 +417,9 @@ class ScriptExtractor:
         deduplication to ensure seamless, complete transcripts without cut-off words.
         """
         import speech_recognition as sr
+
+        if cancel_check and cancel_check():
+            raise InterruptedError("Transcription cancelled.")
 
         target_lang = language or self.default_language
         if target_lang == "auto":
@@ -350,11 +440,15 @@ class ScriptExtractor:
         # Smart Khmer audio probe: if audio contains Khmer speech, prioritize km-KH
         if not language or language in ("auto", "en-US"):
             try:
+                if cancel_check and cancel_check():
+                    raise InterruptedError("Transcription cancelled.")
                 with sr.AudioFile(audio_path) as s_probe:
                     probe_data = recognizer.record(s_probe, offset=0.0, duration=min(6.5, total_duration))
                     km_try = recognizer.recognize_google(probe_data, language="km-KH").strip()
                     if km_try and re.search(r"[\u1780-\u17ff]", km_try):
                         target_lang = "km-KH"
+            except InterruptedError:
+                raise
             except Exception:
                 pass
 
@@ -371,6 +465,9 @@ class ScriptExtractor:
         step_idx = 0
 
         while t < total_duration:
+            if cancel_check and cancel_check():
+                raise InterruptedError("Transcription cancelled by user.")
+
             cur_duration = min(window_size, total_duration - t)
             if cur_duration < 0.6:
                 break
@@ -466,5 +563,54 @@ class ScriptExtractor:
             start_str = seconds_to_srt_timestamp(seg.start)
             end_str = seconds_to_srt_timestamp(seg.end)
             srt_entries.append(f"{index}\n{start_str} --> {end_str}\n{seg.text}\n")
+
+        return "\n".join(srt_entries)
+
+    def _transcribe_openai_whisper(
+        self,
+        audio_path: str,
+        language: Optional[str],
+        on_progress: Optional[Callable[[str, int], None]],
+        cancel_check: Optional[Callable[[], bool]] = None
+    ) -> str:
+        """Transcription via official OpenAI Whisper offline engine with precision timestamps."""
+        if cancel_check and cancel_check():
+            raise InterruptedError("Transcription cancelled.")
+
+        if on_progress:
+            on_progress("Loading OpenAI Whisper AI model...", 25)
+
+        import whisper
+        target_model = self.model_size if self.model_size in ("tiny", "base", "small", "medium") else "base"
+        model = whisper.load_model(target_model)
+
+        if cancel_check and cancel_check():
+            raise InterruptedError("Transcription cancelled.")
+
+        if on_progress:
+            on_progress("Transcribing audio into precision subtitles (.srt)...", 35)
+
+        kwargs = {"fp16": False}
+        if language and language not in ("auto", "none"):
+            kwargs["language"] = language
+
+        result = model.transcribe(audio_path, **kwargs)
+
+        if cancel_check and cancel_check():
+            raise InterruptedError("Transcription cancelled by user.")
+
+        segments = result.get("segments", [])
+        srt_entries: List[str] = []
+        for idx, segment in enumerate(segments, 1):
+            if cancel_check and cancel_check():
+                raise InterruptedError("Transcription cancelled by user.")
+            text = segment.get("text", "").strip()
+            if not text:
+                continue
+            start_s = float(segment.get("start", 0.0))
+            end_s = float(segment.get("end", start_s + 1.0))
+            start_str = seconds_to_srt_timestamp(start_s)
+            end_str = seconds_to_srt_timestamp(end_s)
+            srt_entries.append(f"{idx}\n{start_str} --> {end_str}\n{text}\n")
 
         return "\n".join(srt_entries)

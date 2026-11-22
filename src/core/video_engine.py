@@ -7,6 +7,7 @@ import re
 import json
 import shutil
 import subprocess
+import time
 
 
 class VideoEngine:
@@ -236,10 +237,13 @@ class VideoEngine:
             return res[0]
         return None
 
-    def extract_audio(self, filepath, output_wav=None, enhance_speech=False):
+    def extract_audio(self, filepath, output_wav=None, enhance_speech=False, cancel_check=None):
         """Extract audio track as standard 16kHz mono WAV for dubbing or transcription."""
         if not os.path.exists(filepath) or not self._has_binary(self.ffmpeg_path):
             return None
+
+        if cancel_check and cancel_check():
+            raise InterruptedError("Audio extraction cancelled before execution.")
 
         if output_wav is None:
             output_wav = os.path.join(self.temp_dir, "extracted_audio.wav")
@@ -256,9 +260,26 @@ class VideoEngine:
             if enhance_speech:
                 cmd.extend(["-af", "highpass=f=100,lowpass=f=3800,afftdn=nf=-20,dynaudnorm=f=150:g=15"])
             cmd.extend(["-y", output_wav])
-            subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=0x08000000
+            )
+            while proc.poll() is None:
+                if cancel_check and cancel_check():
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    raise InterruptedError("Audio extraction cancelled by user.")
+                time.sleep(0.04)
+
             if os.path.exists(output_wav) and os.path.getsize(output_wav) > 0:
                 return output_wav
+        except InterruptedError:
+            raise
         except Exception:
             pass
         return None
