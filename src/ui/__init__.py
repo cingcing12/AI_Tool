@@ -1,10 +1,13 @@
-from .widgets import draw_rounded_rect, RoundedCard, RoundedButton, RoundedProgressBar
+from .widgets import draw_rounded_rect, RoundedCard, RoundedButton, RoundedProgressBar, SectionHeader
 from .player_view import YouTubePlayerView
+from .icons import draw_icon
 
 __all__ = [
     "draw_rounded_rect",
     "RoundedCard",
     "RoundedButton",
     "RoundedProgressBar",
-    "YouTubePlayerView"
+    "SectionHeader",
+    "YouTubePlayerView",
+    "draw_icon",
 ]

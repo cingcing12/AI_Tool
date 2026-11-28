@@ -312,15 +312,20 @@ class VoxCPMEngine:
         ]
 
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=0x08000000)
-            while proc.poll() is None:
+            creation_flags = 0x08000000 if sys.platform == "win32" else 0
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creation_flags)
+            while True:
                 if cancel_check and cancel_check():
                     try:
                         proc.kill()
                     except Exception:
                         pass
                     raise InterruptedError("Voice extraction cancelled by user.")
-                time.sleep(0.04)
+                try:
+                    proc.communicate(timeout=0.1)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
 
             if os.path.exists(output_wav_path) and os.path.getsize(output_wav_path) > 1000:
                 return True

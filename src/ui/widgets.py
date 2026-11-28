@@ -1,10 +1,13 @@
 """
-Custom Rounded UI Widgets: RoundedCard, RoundedButton, RoundedProgressBar
+Custom Rounded UI Widgets: RoundedCard, RoundedButton, RoundedProgressBar, SectionHeader
 """
 
 import math
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
+from typing import Optional
+from .icons import draw_icon
 
 
 def draw_rounded_rect(canvas, x1, y1, x2, y2, r, **kwargs):
@@ -113,7 +116,7 @@ class RoundedCard(tk.Canvas):
 
 
 class RoundedButton(tk.Canvas):
-    """A smooth, colorful rounded button with hover effects and state handling."""
+    """A smooth, colorful rounded button with vector icon support, hover effects, and state handling."""
 
     def __init__(
         self,
@@ -121,15 +124,19 @@ class RoundedButton(tk.Canvas):
         text="",
         command=None,
         width=None,
-        height=40,
+        height=38,
         bg_color="#0284c7",
         hover_color="#0369a1",
         text_color="#ffffff",
-        radius=12,
-        font=("Segoe UI", 10, "bold"),
+        radius=10,
+        font=("Segoe UI", 9, "bold"),
+        icon: Optional[str] = None,
+        icon_size: int = 15,
+        icon_color: Optional[str] = None,
+        border_color: str = "",
         **kwargs
     ):
-        parent_bg = parent.cget("bg") if hasattr(parent, "cget") else "#ffffff"
+        parent_bg = parent.cget("bg") if hasattr(parent, "cget") else "#0f172a"
         c_kwargs = {
             "height": height,
             "bg": parent_bg,
@@ -145,6 +152,10 @@ class RoundedButton(tk.Canvas):
         self.parent_bg = parent_bg
         self.command = command
         self.text = text
+        self.icon = icon
+        self.icon_size = icon_size
+        self.icon_color = icon_color
+        self.border_color = border_color
         self.bg_color = bg_color
         self.hover_color = hover_color
         self.current_bg = bg_color
@@ -166,23 +177,70 @@ class RoundedButton(tk.Canvas):
             return
 
         r = min(self.radius, h // 2, w // 2)
-        color = "#cbd5e1" if self.is_disabled else self.current_bg
+        # Use dark slate for disabled states in modern dark UI
+        if self.is_disabled:
+            fill_color = "#334155"
+            content_color = "#64748b"
+            out_color = "#1e293b"
+        else:
+            fill_color = self.current_bg
+            content_color = self.text_color
+            out_color = self.border_color
 
-        draw_rounded_rect(self, 0, 0, w, h, r, fill=color, outline="")
+        draw_rounded_rect(self, 0, 0, w, h, r, fill=fill_color, outline=out_color, width=1)
 
-        self.create_text(
-            w // 2,
-            h // 2,
-            text=self.text,
-            fill=self.text_color,
-            font=self.font
-        )
+        # Draw icon & text with balanced centering
+        eff_icon_color = content_color if (self.is_disabled or not self.icon_color) else self.icon_color
 
-    def set_text(self, text):
+        if self.icon and self.text:
+            try:
+                font_obj = tkfont.Font(font=self.font)
+                text_w = font_obj.measure(self.text)
+            except Exception:
+                text_w = len(self.text) * 7
+
+            gap = 8
+            total_w = self.icon_size + gap + text_w
+            start_x = max(8, (w - total_w) / 2.0)
+
+            # Icon
+            icon_cx = start_x + (self.icon_size / 2.0)
+            icon_cy = h / 2.0
+            draw_icon(self, self.icon, icon_cx, icon_cy, size=self.icon_size, color=eff_icon_color, width=2)
+
+            # Text
+            text_x = start_x + self.icon_size + gap
+            self.create_text(
+                text_x,
+                h / 2.0,
+                text=self.text,
+                fill=content_color,
+                font=self.font,
+                anchor="w"
+            )
+        elif self.icon and not self.text:
+            # Centered icon only
+            draw_icon(self, self.icon, w / 2.0, h / 2.0, size=self.icon_size, color=eff_icon_color, width=2)
+        else:
+            # Centered text only
+            self.create_text(
+                w / 2.0,
+                h / 2.0,
+                text=self.text,
+                fill=content_color,
+                font=self.font,
+                anchor="center"
+            )
+
+    def set_text(self, text: str):
         self.text = text
         self._draw()
 
-    def set_colors(self, bg_color, hover_color):
+    def set_icon(self, icon: Optional[str]):
+        self.icon = icon
+        self._draw()
+
+    def set_colors(self, bg_color: str, hover_color: str):
         self.bg_color = bg_color
         self.hover_color = hover_color
         self.current_bg = bg_color
@@ -205,8 +263,70 @@ class RoundedButton(tk.Canvas):
     def set_state(self, state):
         self.is_disabled = (state == tk.DISABLED)
         self.config(cursor="arrow" if self.is_disabled else "hand2")
-        self.current_bg = "#cbd5e1" if self.is_disabled else self.bg_color
+        self.current_bg = "#334155" if self.is_disabled else self.bg_color
         self._draw()
+
+
+class SectionHeader(tk.Canvas):
+    """Modern categorized section divider with a vector icon, uppercase title, and subtle line."""
+
+    def __init__(
+        self,
+        parent,
+        title: str,
+        icon: Optional[str] = None,
+        height: int = 24,
+        fg_color: str = "#94a3b8",
+        line_color: str = "#334155",
+        font=("Segoe UI", 8, "bold"),
+        **kwargs
+    ):
+        parent_bg = parent.cget("bg") if hasattr(parent, "cget") else "#1e293b"
+        super().__init__(
+            parent,
+            height=height,
+            bg=parent_bg,
+            highlightthickness=0,
+            bd=0,
+            **kwargs
+        )
+        self.title = title
+        self.icon = icon
+        self.fg_color = fg_color
+        self.line_color = line_color
+        self.font = font
+        self.bind("<Configure>", self._draw)
+
+    def _draw(self, event=None):
+        self.delete("all")
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w < 10 or h < 5:
+            return
+
+        cx = 10
+        cy = h / 2.0
+        if self.icon:
+            draw_icon(self, self.icon, cx, cy, size=12, color=self.fg_color, width=1)
+            cx += 12
+
+        self.create_text(
+            cx,
+            cy,
+            text=self.title.upper(),
+            fill=self.fg_color,
+            font=self.font,
+            anchor="w",
+            tags="title_text"
+        )
+        try:
+            bbox = self.bbox("title_text")
+            line_start_x = bbox[2] + 8 if bbox else cx + 60
+        except Exception:
+            line_start_x = cx + 60
+
+        if line_start_x < w - 6:
+            self.create_line(line_start_x, cy, w - 4, cy, fill=self.line_color, width=1)
 
 
 class RoundedProgressBar(tk.Canvas):

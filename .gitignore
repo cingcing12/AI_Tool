@@ -12,6 +12,8 @@ ENV/
 # Temporary caches
 temp/*
 !temp/.gitkeep
+.temp/
+scratch/
 
 # Large FFmpeg Binaries (exceeds GitHub 100MB limit)
 bin/*.exe

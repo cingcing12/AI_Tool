@@ -13,6 +13,7 @@ import queue
 import threading
 import tkinter as tk
 from .widgets import draw_rounded_rect
+from .icons import draw_icon
 from ..core.video_engine import VideoEngine
 from ..core.audio_player import WindowsAudioPlayer
 
@@ -28,7 +29,12 @@ class YouTubePlayerView(tk.Canvas):
     """
 
     def __init__(self, parent, on_status_change=None, radius=14, **kwargs):
-        parent_bg = parent.cget("bg") if hasattr(parent, "cget") else "#ffffff"
+        self.card_bg = kwargs.pop("card_bg", "#1e293b")
+        self.border_color = kwargs.pop("border_color", "#334155")
+        self.screen_bg = kwargs.pop("screen_bg", "#020617")
+        self.controls_fg = kwargs.pop("controls_fg", "#f8fafc")
+
+        parent_bg = parent.cget("bg") if hasattr(parent, "cget") else "#0f172a"
         super().__init__(parent, bg=parent_bg, highlightthickness=0, bd=0, cursor="hand2", **kwargs)
 
         self.radius = radius
@@ -422,18 +428,30 @@ class YouTubePlayerView(tk.Canvas):
         frame_interval = 1.0 / float(fps)
         current_ts = float(start_time)
 
+        # Master Wall Clock synchronization (locks video frames in exact real time with audio)
+        stream_start_wall = time.perf_counter()
+        stream_start_media = float(start_time)
+
         try:
             while not self._stop_stream_event.is_set():
                 if gen != self._stream_gen:
                     break
 
-                t_start = time.perf_counter()
                 raw_frame = proc.stdout.read(frame_bytes_len)
                 if not raw_frame or len(raw_frame) < frame_bytes_len:
                     break
 
-                ppm_data = header_prefix + raw_frame
                 current_ts += frame_interval
+
+                # Real elapsed wall-clock time since playback started
+                elapsed_real = time.perf_counter() - stream_start_wall
+                expected_ts = stream_start_media + elapsed_real
+
+                # If decoding lagged behind real time by more than 1.5 frames, drop the stale frame
+                if current_ts < (expected_ts - frame_interval * 1.5):
+                    continue
+
+                ppm_data = header_prefix + raw_frame
 
                 try:
                     if self.frame_queue.full():
@@ -445,10 +463,10 @@ class YouTubePlayerView(tk.Canvas):
                 except Exception:
                     pass
 
-                elapsed = time.perf_counter() - t_start
-                sleep_left = frame_interval - elapsed
-                if sleep_left > 0.001:
-                    time.sleep(sleep_left)
+                # If decoding is ahead of real time, sleep until the exact presentation timestamp
+                remaining_sleep = current_ts - expected_ts
+                if remaining_sleep > 0.002:
+                    time.sleep(min(remaining_sleep, frame_interval))
 
         except Exception:
             pass
@@ -468,11 +486,13 @@ class YouTubePlayerView(tk.Canvas):
         tw, th = self._get_target_dimensions()
         threading.Thread(target=self._extract_frame_worker, args=(self.current_time, tw, th), daemon=True).start()
 
-    def _draw_corner_masks(self, x1, y1, x2, y2, r=10, fill_color="#ffffff", border_color="#e2e8f0"):
+    def _draw_corner_masks(self, x1, y1, x2, y2, r=10, fill_color=None, border_color=None):
         """Draw mathematically exact corner cutouts and a rounded outline over the video frame."""
         if r <= 0:
             return
 
+        fc = fill_color or self.card_bg
+        bc = border_color or self.border_color
         steps = 10
 
         # 1. Top-Left Corner Cutout
@@ -482,7 +502,7 @@ class YouTubePlayerView(tk.Canvas):
             a = -math.pi / 2.0 - (math.pi / 2.0) * (i / steps)
             tl.extend([cx + r * math.cos(a), cy + r * math.sin(a)])
         tl.extend([x1, y1 + r, x1, y1])
-        self.create_polygon(tl, fill=fill_color, outline="", tags="corner_mask")
+        self.create_polygon(tl, fill=fc, outline="", tags="corner_mask")
 
         # 2. Top-Right Corner Cutout
         cx, cy = x2 - r, y1 + r
@@ -491,7 +511,7 @@ class YouTubePlayerView(tk.Canvas):
             a = 0.0 - (math.pi / 2.0) * (i / steps)
             tr.extend([cx + r * math.cos(a), cy + r * math.sin(a)])
         tr.extend([x2 - r, y1, x2, y1])
-        self.create_polygon(tr, fill=fill_color, outline="", tags="corner_mask")
+        self.create_polygon(tr, fill=fc, outline="", tags="corner_mask")
 
         # 3. Bottom-Right Corner Cutout
         cx, cy = x2 - r, y2 - r
@@ -500,7 +520,7 @@ class YouTubePlayerView(tk.Canvas):
             a = math.pi / 2.0 - (math.pi / 2.0) * (i / steps)
             br.extend([cx + r * math.cos(a), cy + r * math.sin(a)])
         br.extend([x2, y2 - r, x2, y2])
-        self.create_polygon(br, fill=fill_color, outline="", tags="corner_mask")
+        self.create_polygon(br, fill=fc, outline="", tags="corner_mask")
 
         # 4. Bottom-Left Corner Cutout
         cx, cy = x1 + r, y2 - r
@@ -509,10 +529,10 @@ class YouTubePlayerView(tk.Canvas):
             a = math.pi - (math.pi / 2.0) * (i / steps)
             bl.extend([cx + r * math.cos(a), cy + r * math.sin(a)])
         bl.extend([x1 + r, y2, x1, y2])
-        self.create_polygon(bl, fill=fill_color, outline="", tags="corner_mask")
+        self.create_polygon(bl, fill=fc, outline="", tags="corner_mask")
 
         # Crisp rounded border outline on top
-        draw_rounded_rect(self, x1, y1, x2, y2, r, fill="", outline=border_color, width=1.5, tags="screen_border")
+        draw_rounded_rect(self, x1, y1, x2, y2, r, fill="", outline=bc, width=1.5, tags="screen_border")
 
     def _redraw_full(self):
         """Full redraw of canvas, background, video image, corner masks, and controls."""
@@ -529,8 +549,8 @@ class YouTubePlayerView(tk.Canvas):
         view_pad = 6
         screen_bottom = h - ctl_h
 
-        # 1. Outer Container (Clean White with Rounded Corners)
-        draw_rounded_rect(self, 1, 1, w - 1, h - 1, r, fill="#ffffff", outline="#e2e8f0", width=1)
+        # 1. Outer Container (Dark Slate Card with Crisp Border)
+        draw_rounded_rect(self, 1, 1, w - 1, h - 1, r, fill=self.card_bg, outline=self.border_color, width=1)
 
         # 2. Upper Video Preview Screen
         mid_x = w // 2
@@ -551,14 +571,14 @@ class YouTubePlayerView(tk.Canvas):
             frame_mid_x = (screen_x1 + screen_x2) // 2
             frame_mid_y = (screen_y1 + screen_y2) // 2
 
-            # Cinema Black Screen (#000000)
+            # Cinema Black Screen
             draw_rounded_rect(
                 self,
                 screen_x1, screen_y1,
                 screen_x2, screen_y2,
                 10,
-                fill="#000000",
-                outline="#000000",
+                fill=self.screen_bg,
+                outline=self.border_color,
                 width=1
             )
 
@@ -566,18 +586,13 @@ class YouTubePlayerView(tk.Canvas):
             if self.current_frame_image:
                 self.img_item_id = self.create_image(frame_mid_x, frame_mid_y, image=self.current_frame_image)
 
-            # Rounded corner masks
-            self._draw_corner_masks(screen_x1, screen_y1, screen_x2, screen_y2, r=10, fill_color="#ffffff", border_color="#cbd5e1")
+            # Rounded corner masks matching card bg
+            self._draw_corner_masks(screen_x1, screen_y1, screen_x2, screen_y2, r=10, fill_color=self.card_bg, border_color=self.border_color)
 
             # Center Play Overlay when paused
             if not self.is_playing:
-                self.create_oval(frame_mid_x - 24, frame_mid_y - 24, frame_mid_x + 24, frame_mid_y + 24, fill="#ef4444", outline="", tags="play_overlay")
-                self.create_polygon(
-                    frame_mid_x - 7, frame_mid_y - 11,
-                    frame_mid_x + 13, frame_mid_y,
-                    frame_mid_x - 7, frame_mid_y + 11,
-                    fill="#ffffff", outline="", tags="play_overlay"
-                )
+                self.create_oval(frame_mid_x - 24, frame_mid_y - 24, frame_mid_x + 24, frame_mid_y + 24, fill="#10b981", outline="#ffffff", width=1.5, tags="play_overlay")
+                draw_icon(self, "play", frame_mid_x + 2, frame_mid_y, size=16, color="#ffffff")
 
             # Scrubber track aligned directly under the video frame
             scrub_pad = screen_x1 + 4
@@ -608,23 +623,30 @@ class YouTubePlayerView(tk.Canvas):
                 screen_x1, screen_y1,
                 screen_x2, screen_y2,
                 10,
-                fill="#f8fafc",
-                outline="#e2e8f0",
+                fill="#0b0f19",
+                outline=self.border_color,
                 width=1
             )
+            # Center Play & Studio Icon
             self.create_oval(
                 frame_mid_x - 28, frame_mid_y - 28,
                 frame_mid_x + 28, frame_mid_y + 28,
-                fill="#ffffff",
-                outline="#cbd5e1",
-                width=2
+                fill="#1e293b",
+                outline="#38bdf8",
+                width=1.5
             )
-            self.create_polygon(
-                frame_mid_x - 6, frame_mid_y - 11,
-                frame_mid_x + 12, frame_mid_y,
-                frame_mid_x - 6, frame_mid_y + 11,
-                fill="#0284c7",
-                outline=""
+            draw_icon(self, "video", frame_mid_x, frame_mid_y, size=24, color="#38bdf8", width=2)
+            self.create_text(
+                frame_mid_x, frame_mid_y + 44,
+                text="No Video Loaded",
+                fill="#f8fafc",
+                font=("Segoe UI", 10, "bold")
+            )
+            self.create_text(
+                frame_mid_x, frame_mid_y + 62,
+                text="Click 'Load Video' or 'Download Video' to preview",
+                fill="#64748b",
+                font=("Segoe UI", 8)
             )
 
             scrub_pad = screen_x1 + 4
@@ -635,63 +657,47 @@ class YouTubePlayerView(tk.Canvas):
             self._controls_y = scrub_y + 16
             self._controls_start_x = scrub_pad
 
-        # 3. YouTube Bottom Controls
+        # 3. Bottom Controls Row
         # Scrubber Background track
-        self.create_rectangle(scrub_pad, scrub_y, scrub_pad + scrub_w, scrub_y + 3, fill="#e2e8f0", outline="")
+        self.create_rectangle(scrub_pad, scrub_y, scrub_pad + scrub_w, scrub_y + 3, fill="#334155", outline="")
 
         # Scrubber Progress Red Bar and Knob
         prog = 0.0
         if self.duration > 0:
             prog = max(0.0, min(1.0, self.current_time / self.duration))
         played_w = scrub_pad + int(scrub_w * prog)
-        self.scrub_fill_id = self.create_rectangle(scrub_pad, scrub_y, played_w, scrub_y + 3, fill="#ff0000", outline="")
-        self.scrub_knob_id = self.create_oval(played_w - 5, scrub_y - 3, played_w + 5, scrub_y + 6, fill="#ff0000", outline="")
+        self.scrub_fill_id = self.create_rectangle(scrub_pad, scrub_y, played_w, scrub_y + 3, fill="#ef4444", outline="")
+        self.scrub_knob_id = self.create_oval(played_w - 5, scrub_y - 3, played_w + 5, scrub_y + 6, fill="#ef4444", outline="")
 
         # Controls Row aligned snugly with video frame
         cy = self._controls_y
         cs_x = self._controls_start_x
-        icon_color = "#0f172a"
+        icon_color = self.controls_fg
 
         # Play / Pause toggle icon
         px = cs_x + 12
-        if not self.is_playing:
-            self.create_polygon(px - 5, cy - 7, px + 7, cy, px - 5, cy + 7, fill=icon_color, outline="")
-        else:
-            self.create_rectangle(px - 5, cy - 6, px - 2, cy + 6, fill=icon_color, outline="")
-            self.create_rectangle(px + 2, cy - 6, px + 5, cy + 6, fill=icon_color, outline="")
+        draw_icon(self, "pause" if self.is_playing else "play", px, cy, size=14, color=icon_color, width=2)
 
         # Speaker icon
         sx = cs_x + 40
-        self.create_polygon(
-            sx - 6, cy - 4,
-            sx - 2, cy - 4,
-            sx + 3, cy - 7,
-            sx + 3, cy + 7,
-            sx - 2, cy + 4,
-            sx - 6, cy + 4,
-            fill=icon_color, outline=""
-        )
-        if not self.is_muted and self.volume > 0:
-            self.create_arc(sx - 1, cy - 6, sx + 8, cy + 6, start=-60, extent=120, style=tk.ARC, outline=icon_color, width=2)
-        else:
-            self.create_line(sx + 5, cy - 4, sx + 10, cy + 4, fill="#ef4444", width=2)
-            self.create_line(sx + 10, cy - 4, sx + 5, cy + 4, fill="#ef4444", width=2)
+        is_vol_active = (not self.is_muted and self.volume > 0)
+        draw_icon(self, "volume" if is_vol_active else "volume_mute", sx, cy, size=15, color=icon_color, width=2)
 
         # Volume slider bar
         vx1, vx2 = cs_x + 58, cs_x + 106
-        self.create_rectangle(vx1, cy - 1, vx2, cy + 2, fill="#e2e8f0", outline="")
+        self.create_rectangle(vx1, cy - 1, vx2, cy + 2, fill="#334155", outline="")
         cur_v = 0.0 if self.is_muted else self.volume
         vol_fill_w = vx1 + int((vx2 - vx1) * cur_v)
-        self.create_rectangle(vx1, cy - 1, vol_fill_w, cy + 2, fill=icon_color, outline="")
-        self.create_oval(vol_fill_w - 3, cy - 3, vol_fill_w + 3, cy + 3, fill=icon_color, outline="")
+        self.create_rectangle(vx1, cy - 1, vol_fill_w, cy + 2, fill="#38bdf8", outline="")
+        self.create_oval(vol_fill_w - 3, cy - 3, vol_fill_w + 3, cy + 3, fill="#38bdf8", outline="")
 
         # Time readout
         time_text = f"{self._format_time(self.current_time)} / {self._format_time(self.duration)}"
         self.time_text_id = self.create_text(
             cs_x + 118, cy,
             text=time_text,
-            fill=icon_color,
-            font=("Segoe UI", 9, "bold"),
+            fill="#94a3b8",
+            font=("Consolas", 9, "bold"),
             anchor="w"
         )
 

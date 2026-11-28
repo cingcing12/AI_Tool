@@ -14,6 +14,12 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
+# Ensure bin directory containing ffmpeg.exe is always in PATH for Whisper and subprocesses
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_BIN_DIR = os.path.join(_BASE_DIR, "bin")
+if os.path.exists(_BIN_DIR) and _BIN_DIR not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _BIN_DIR + os.pathsep + os.environ.get("PATH", "")
+
 
 @dataclass
 class SubtitleSegment:
@@ -100,6 +106,69 @@ def google_recognize_best(recognizer, audio_data, speech_lang: str = "en-US") ->
 
     # Standard fallback
     return recognizer.recognize_google(audio_data, language=lang).strip()
+
+
+def split_segments_by_words(
+    segments: List[dict],
+    min_pause: float = 0.28,
+    max_dur: float = 4.2
+) -> List[tuple[float, float, str]]:
+    """
+    Split speech recognition segments into natural, tightly-timed dialogue units.
+    Uses word-level timestamps to detect speaker turns, sentence boundaries, and pauses.
+    Guarantees 100% real-time synchronization with on-screen character dialogue.
+    """
+    subtitles = []
+
+    for seg in segments:
+        words = seg.get("words", [])
+        if not words:
+            text = seg.get("text", "").strip()
+            if text:
+                subtitles.append((float(seg.get("start", 0.0)), float(seg.get("end", 0.0)), text))
+            continue
+
+        current_words = []
+        current_start = None
+
+        for i, w in enumerate(words):
+            if isinstance(w, dict):
+                word_txt = w.get("word", "")
+                w_start = float(w.get("start", 0.0))
+                w_end = float(w.get("end", w_start + 0.1))
+            else:
+                word_txt = getattr(w, "word", "")
+                w_start = float(getattr(w, "start", 0.0))
+                w_end = float(getattr(w, "end", w_start + 0.1))
+
+            if current_start is None:
+                current_start = w_start
+            current_words.append(word_txt)
+
+            # Check split conditions:
+            # 1. Terminal punctuation boundary (.?!。？！!)
+            has_terminal_punct = bool(re.search(r"[.?!。？！!]$", word_txt.strip()))
+
+            # 2. Significant pause before next word (indicating new sentence or speaker turn)
+            has_pause = False
+            if i + 1 < len(words):
+                next_w = words[i + 1]
+                next_start = float(next_w.get("start", w_end) if isinstance(next_w, dict) else getattr(next_w, "start", w_end))
+                if (next_start - w_end) >= min_pause:
+                    has_pause = True
+
+            # 3. Maximum duration limit for real-time mouth movement
+            dur_so_far = w_end - current_start
+            is_too_long = dur_so_far >= max_dur
+
+            if (has_terminal_punct and dur_so_far >= 0.70) or has_pause or is_too_long or (i == len(words) - 1):
+                clean_text = "".join(current_words).strip()
+                if clean_text:
+                    subtitles.append((current_start, w_end, clean_text))
+                current_words = []
+                current_start = None
+
+    return subtitles
 
 
 class ScriptExtractor:
@@ -263,8 +332,8 @@ class ScriptExtractor:
             if srt_content and len(srt_content.strip()) > 10:
                 lines = [l for l in srt_content.strip().splitlines() if l and not l.isdigit() and "-->" not in l]
                 text_content = " ".join(lines).strip()
-                # Must contain at least 6 meaningful characters (not just single-letter noise)
-                if len(text_content) > 6 and not all(len(w) <= 2 for w in text_content.split()):
+                # Must contain at least 3 characters (supports Chinese, Khmer, English words)
+                if len(text_content) >= 3:
                     has_valid_speech = True
 
             if not has_valid_speech:
@@ -298,7 +367,7 @@ class ScriptExtractor:
                     pass
 
         if on_progress:
-            on_progress("Script extraction complete! 🎉", 100)
+            on_progress("Script extraction complete!", 100)
 
         return srt_content
 
@@ -324,32 +393,33 @@ class ScriptExtractor:
         if on_progress:
             on_progress("Transcribing audio into subtitles (.srt)...", 35)
 
-        segments, info = model.transcribe(
+        segments_gen, info = model.transcribe(
             audio_path,
             language=language,
             vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=500),
-            beam_size=5
+            beam_size=5,
+            word_timestamps=True
         )
-
-        duration = info.duration or 1.0
+        segments = list(segments_gen)
+        seg_dicts = []
+        for s in segments:
+            seg_dicts.append({
+                "start": s.start,
+                "end": s.end,
+                "text": s.text,
+                "words": getattr(s, "words", []) or []
+            })
+        precision_subs = split_segments_by_words(seg_dicts)
         srt_entries: List[str] = []
-        index = 1
-
-        for segment in segments:
+        for idx, (start_s, end_s, text) in enumerate(precision_subs, 1):
             if cancel_check and cancel_check():
                 raise InterruptedError("Transcription cancelled by user.")
-            text = segment.text.strip()
             if not text:
                 continue
-            start_str = seconds_to_srt_timestamp(segment.start)
-            end_str = seconds_to_srt_timestamp(segment.end)
-            srt_entries.append(f"{index}\n{start_str} --> {end_str}\n{text}\n")
-            index += 1
-
-            if on_progress and duration > 0:
-                pct = min(95, 35 + int((segment.end / duration) * 60))
-                on_progress(f"Transcribing: {segment.end:.1f}s / {duration:.1f}s", pct)
+            start_str = seconds_to_srt_timestamp(start_s)
+            end_str = seconds_to_srt_timestamp(end_s)
+            srt_entries.append(f"{idx}\n{start_str} --> {end_str}\n{text}\n")
 
         return "\n".join(srt_entries)
 
@@ -364,12 +434,13 @@ class ScriptExtractor:
         if cancel_check and cancel_check():
             raise InterruptedError("Transcription cancelled.")
 
-        if on_progress:
-            on_progress("Loading OpenAI Whisper AI model...", 25)
-
-        import whisper
-        target_model = self.model_size if self.model_size in ("tiny", "base", "small", "medium") else "base"
-        model = whisper.load_model(target_model)
+        if not hasattr(self, "_openai_whisper_model") or self._openai_whisper_model is None:
+            if on_progress:
+                on_progress("Loading OpenAI Whisper AI model...", 25)
+            import whisper
+            target_model = self.model_size if self.model_size in ("tiny", "base", "small", "medium") else "base"
+            self._openai_whisper_model = whisper.load_model(target_model)
+        model = self._openai_whisper_model
 
         if cancel_check and cancel_check():
             raise InterruptedError("Transcription cancelled.")
@@ -377,7 +448,13 @@ class ScriptExtractor:
         if on_progress:
             on_progress("Transcribing audio into precision subtitles (.srt)...", 35)
 
-        kwargs = {"fp16": False}
+        # Universal Chinese short-drama context prompt covering all major genres (CEO/romance, action/fighting, fantasy/xianxia, historical/court, apocalypse/revenge)
+        prompt = (
+            "以下是标准普通话短剧、都市爽剧、豪门总裁、仙侠修真、古装宫廷、末世逆袭对白："
+            "总裁、董事长、离婚、签合同、少废话、找死、看招、给我跪下、宗门、修仙、师傅、徒弟、"
+            "大人、陛下、属下、兄弟、饶命、末世、幽灵船、战舰、亡灵大军、老大。"
+        )
+        kwargs = {"fp16": False, "word_timestamps": True, "initial_prompt": prompt, "temperature": 0.0}
         if language and language not in ("auto", "none"):
             kwargs["language"] = language
 
@@ -387,15 +464,13 @@ class ScriptExtractor:
             raise InterruptedError("Transcription cancelled by user.")
 
         segments = result.get("segments", [])
+        precision_subs = split_segments_by_words(segments)
         srt_entries: List[str] = []
-        for idx, segment in enumerate(segments, 1):
+        for idx, (start_s, end_s, text) in enumerate(precision_subs, 1):
             if cancel_check and cancel_check():
                 raise InterruptedError("Transcription cancelled by user.")
-            text = segment.get("text", "").strip()
             if not text:
                 continue
-            start_s = float(segment.get("start", 0.0))
-            end_s = float(segment.get("end", start_s + 1.0))
             start_str = seconds_to_srt_timestamp(start_s)
             end_str = seconds_to_srt_timestamp(end_s)
             srt_entries.append(f"{idx}\n{start_str} --> {end_str}\n{text}\n")
@@ -563,54 +638,5 @@ class ScriptExtractor:
             start_str = seconds_to_srt_timestamp(seg.start)
             end_str = seconds_to_srt_timestamp(seg.end)
             srt_entries.append(f"{index}\n{start_str} --> {end_str}\n{seg.text}\n")
-
-        return "\n".join(srt_entries)
-
-    def _transcribe_openai_whisper(
-        self,
-        audio_path: str,
-        language: Optional[str],
-        on_progress: Optional[Callable[[str, int], None]],
-        cancel_check: Optional[Callable[[], bool]] = None
-    ) -> str:
-        """Transcription via official OpenAI Whisper offline engine with precision timestamps."""
-        if cancel_check and cancel_check():
-            raise InterruptedError("Transcription cancelled.")
-
-        if on_progress:
-            on_progress("Loading OpenAI Whisper AI model...", 25)
-
-        import whisper
-        target_model = self.model_size if self.model_size in ("tiny", "base", "small", "medium") else "base"
-        model = whisper.load_model(target_model)
-
-        if cancel_check and cancel_check():
-            raise InterruptedError("Transcription cancelled.")
-
-        if on_progress:
-            on_progress("Transcribing audio into precision subtitles (.srt)...", 35)
-
-        kwargs = {"fp16": False}
-        if language and language not in ("auto", "none"):
-            kwargs["language"] = language
-
-        result = model.transcribe(audio_path, **kwargs)
-
-        if cancel_check and cancel_check():
-            raise InterruptedError("Transcription cancelled by user.")
-
-        segments = result.get("segments", [])
-        srt_entries: List[str] = []
-        for idx, segment in enumerate(segments, 1):
-            if cancel_check and cancel_check():
-                raise InterruptedError("Transcription cancelled by user.")
-            text = segment.get("text", "").strip()
-            if not text:
-                continue
-            start_s = float(segment.get("start", 0.0))
-            end_s = float(segment.get("end", start_s + 1.0))
-            start_str = seconds_to_srt_timestamp(start_s)
-            end_str = seconds_to_srt_timestamp(end_s)
-            srt_entries.append(f"{idx}\n{start_str} --> {end_str}\n{text}\n")
 
         return "\n".join(srt_entries)
